@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from 'react';
 import { fetchEventDetail, fetchCrops, EventDetail, getCropUrl, getCsvUrl, getSourceVideoUrl, getVideoUrl } from '@/lib/api';
 import VideoAnnotator from '@/components/VideoAnnotator';
+import CausalPanel from '@/components/CausalPanel';
 import styles from './event.module.css';
 import Link from 'next/link';
 
@@ -120,6 +121,8 @@ export default function EventDetailView({ params }: { params: Promise<{ id: stri
           </div>
         </div>
       )}
+
+      {event.Status === 'Extracted' && <CausalPanel eventId={event.Event_ID} />}
 
       {event.Status === 'Processing' && (
         <div className={styles.processingPane}>

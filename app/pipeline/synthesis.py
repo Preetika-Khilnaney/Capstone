@@ -150,27 +150,29 @@ def _build_evidence(event_id: str) -> dict | None:
     n_persons = int(class_counts.get("person", 0))
     n_vehicles = int(sum(c for k, c in class_counts.items() if k in _VEHICLE_CLASSES))
 
-    # ── causal findings (Track 2) ────────────────────────────────────────────
-    causal = None
+    # ── causal findings (Track 2) — one summary per analyzed target ──────────
+    causal: list[dict] | None = None
     if causal_path.exists():
         try:
             cg = json.loads(causal_path.read_text(encoding="utf-8"))
-            drivers = cg.get("drivers_of_target_speed", [])
-            external = [l for l in drivers if l.get("cause") != "tgt_speed"]
-            causal = {
-                "target_object": cg.get("target_object"),
-                "target_class": cg.get("target_class"),
-                "target_speed_drop_mps": cg.get("target_speed_drop_mps"),
-                "external_drivers": external,
-                "interpretation": (
-                    "No inter-vehicle reactive-braking chain detected — the target's "
-                    "speed change is explained by its own past only (consistent with an "
-                    "impact or an independent manoeuvre, not a following response)."
-                    if not external else
-                    "Reactive coupling detected: " + "; ".join(
-                        f"{l['cause']} at lag {l['lag']} (strength {l['strength']})" for l in external)
-                ),
-            }
+            causal = []
+            for t in cg.get("targets", []):
+                drivers = t.get("drivers_of_target_speed", [])
+                external = [l for l in drivers if l.get("cause") != "tgt_speed"]
+                causal.append({
+                    "target_object": t.get("target_object"),
+                    "target_class": t.get("target_class"),
+                    "target_speed_drop_mps": t.get("target_speed_drop_mps"),
+                    "external_drivers": external,
+                    "interpretation": (
+                        "No inter-vehicle reactive-braking chain detected — the target's "
+                        "speed change is explained by its own past only (consistent with an "
+                        "impact or an independent manoeuvre, not a following response)."
+                        if not external else
+                        "Reactive coupling detected: " + "; ".join(
+                            f"{l['cause']} at lag {l['lag']} (strength {l['strength']})" for l in external)
+                    ),
+                })
         except Exception as exc:
             logger.warning("Could not read causal graph: %s", exc)
 
@@ -222,11 +224,11 @@ def _format_evidence(e: dict) -> str:
             lines.append(s)
     lines.append("")
     if e["causal"]:
-        c = e["causal"]
         lines.append("CAUSAL ASSESSMENT (Track 2 / PCMCI+):")
-        lines.append(f"  Target: {c.get('target_class')} {c.get('target_object')} "
-                     f"(speed drop {c.get('target_speed_drop_mps')} m/s).")
-        lines.append(f"  {c.get('interpretation')}")
+        for c in e["causal"]:
+            lines.append(f"  Target: {c.get('target_class')} {c.get('target_object')} "
+                         f"(speed drop {c.get('target_speed_drop_mps')} m/s).")
+            lines.append(f"    {c.get('interpretation')}")
     else:
         lines.append("CAUSAL ASSESSMENT: not available (causal analysis not run).")
     return "\n".join(lines)

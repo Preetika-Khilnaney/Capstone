@@ -1,0 +1,280 @@
+.panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin-top: 24px;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.sectionTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-accent);
+}
+
+.subTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-accent);
+  margin: 20px 0 12px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.actionBtn {
+  background-color: var(--color-active);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.actionBtn:hover {
+  opacity: 0.85;
+}
+
+.actionBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.emptyState {
+  color: var(--text-muted);
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  font-size: 0.9rem;
+}
+
+.errorBox {
+  color: var(--color-danger);
+  background-color: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+.statRow {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.statCard {
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 110px;
+}
+
+.statLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.statValue {
+  font-size: 0.95rem;
+  color: var(--color-active);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.driverTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 12px;
+}
+
+.driverTable th {
+  text-align: left;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.driverTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.rowFlagged {
+  background-color: rgba(239, 68, 68, 0.07);
+}
+
+.caveat {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin-top: 12px;
+  font-style: italic;
+}
+
+.targetBlock {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.targetBlock:first-child {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.reportText {
+  color: var(--text-main);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.reportText p {
+  margin-bottom: 6px;
+}
+
+.reportList {
+  margin: 0 0 10px 20px;
+  padding: 0;
+}
+
+.reportList li {
+  margin-bottom: 4px;
+}
+
+.incidentBox {
+  background-color: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-top: 12px;
+}
+
+.incidentRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  margin-top: 6px;
+}
+
+.incidentBadge {
+  background-color: var(--color-danger);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* ── Causal graph SVG ─────────────────────────────────────────────── */
+
+.graphWrap {
+  background-color: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+.graphSvg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.nodeTarget {
+  fill: rgba(59, 130, 246, 0.15);
+  stroke: var(--color-active);
+  stroke-width: 2.5;
+}
+
+.nodeActive {
+  fill: rgba(239, 68, 68, 0.1);
+  stroke: var(--color-danger);
+  stroke-width: 2;
+}
+
+.nodeInactive {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: var(--border-focus);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.nodeLabel {
+  fill: var(--text-main);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nodeLabelTarget {
+  fill: var(--text-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.nodeSubLabelTarget {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+
+.edgeLabel {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.graphLegend {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.graphLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dotDanger, .dotActive, .dotMuted {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dotDanger { background-color: var(--color-danger); }
+.dotActive { background-color: var(--color-active); }
+.dotMuted { background-color: var(--border-focus); }

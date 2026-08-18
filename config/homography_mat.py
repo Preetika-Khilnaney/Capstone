@@ -33,8 +33,16 @@ SCENES = {
         "src": [[250, 305], [370, 305], [415, 170], [365, 170]],
         "lane_width_m": 3.5, "longitudinal_m": 14.0,
     },
+    # v1.mp4 — intersection collision clip, calibrated on the near-field lane
+    # (dashed markers around x=250-380, y=180-340 on the 640x360 frame). The
+    # actual collision happens in the far field near the horizon (y<100),
+    # which stays outside ProjectionConfig's reliable region by design.
+    "v1_intersection": {
+        "src": [[250, 340], [370, 340], [355, 180], [270, 180]],
+        "lane_width_m": 3.5, "longitudinal_m": 14.0,
+    },
 }
-ACTIVE = "kamman_cam5"
+ACTIVE = "v1_intersection"
 
 
 def main() -> None:

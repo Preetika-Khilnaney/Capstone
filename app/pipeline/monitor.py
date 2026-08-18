@@ -209,6 +209,12 @@ class FeedMonitor(threading.Thread):
             finalize_event(event_id, result, event.trigger_time_sec, source_video_path=self.source)
             self.stats.events_triggered += 1
             logger.info("[%s] event %s processed", self.video_id, event_id)
+            try:
+                from app.pipeline.causal import get_causal_engine
+                get_causal_engine().analyze_event(event_id)
+            except Exception as exc:
+                logger.warning("[%s] causal analysis for %s failed (non-fatal): %s",
+                                self.video_id, event_id, exc)
         except Exception as exc:
             logger.error("[%s] event %s failed: %s", self.video_id, event_id, exc, exc_info=True)
 

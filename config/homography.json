@@ -1,5 +1,5 @@
 {
-  "scene": "kamman_cam5",
+  "scene": "v1_intersection",
   "ref_width": 640,
   "ref_height": 360,
   "lane_width_m": 3.5,
@@ -7,19 +7,19 @@
   "src_pts": [
     [
       250,
-      305
+      340
     ],
     [
       370,
-      305
+      340
     ],
     [
-      415,
-      170
+      355,
+      180
     ],
     [
-      365,
-      170
+      270,
+      180
     ]
   ],
   "dst_pts": [
@@ -40,5 +40,5 @@
       14.0
     ]
   ],
-  "note": "Calibrated on 640x360 for scene 'kamman_cam5'; 3.5m lane assumption."
+  "note": "Calibrated on 640x360 for scene 'v1_intersection'; 3.5m lane assumption."
 }

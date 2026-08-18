@@ -56,6 +56,16 @@ def _run_pipeline(video_path: str, event_id: str) -> None:
 
         logger.info("[%s] Pipeline complete. Output: %s", event_id, output)
 
+        # ── Phase 3: Causal analysis (Track 2, best-effort) ───────────
+        # Decoupled from pipeline success: the event stays "Extracted" even if
+        # this fails or finds nothing, so it can be re-run manually via the API.
+        try:
+            logger.info("[%s] Phase 3: Causal analysis", event_id)
+            from app.pipeline.causal import get_causal_engine
+            get_causal_engine().analyze_event(event_id)
+        except Exception as exc:
+            logger.warning("[%s] Causal analysis failed (non-fatal): %s", event_id, exc)
+
     except Exception as exc:
         logger.error("[%s] Pipeline failed: %s", event_id, exc, exc_info=True)
         try:

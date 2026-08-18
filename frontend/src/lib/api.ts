@@ -182,6 +182,128 @@ export async function ragSearch(query: string, limit: number = 5): Promise<RAGSe
   return data.results || [];
 }
 
+// ── Causal Engine API (Track 2) ──────────────────────────────────────────────
+
+export interface CausalDriver {
+  cause: string;
+  lag: number;
+  strength: number;
+}
+
+export interface CausalTarget {
+  target_object: string;
+  target_class: string;
+  target_speed_drop_mps: number;
+  target_lead_fraction: number;
+  variables: string[];
+  n_timesteps: number;
+  tau_max: number;
+  pc_alpha_used?: number;
+  drivers_of_target_speed: CausalDriver[];
+}
+
+export interface CausalResult {
+  status: string;
+  message?: string;
+  event_id?: string;
+  targets?: CausalTarget[];
+  note?: string;
+}
+
+/**
+ * Run PCMCI+ causal discovery on an event's kinematics (Track 2)
+ */
+export async function analyzeCausal(eventId: string): Promise<CausalResult> {
+  const res = await fetch(`${API_BASE}/api/causal/analyze/${eventId}`, { method: 'POST' });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = body.detail;
+    } catch { /* use statusText fallback */ }
+    throw new Error(`Causal analysis failed: ${detail}`);
+  }
+  return res.json();
+}
+
+/**
+ * Fetch a previously-computed causal graph for an event, if one exists
+ */
+export async function fetchCausalGraph(eventId: string): Promise<CausalResult | null> {
+  const res = await fetch(`${API_BASE}/api/causal/${eventId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Failed to fetch causal graph: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+// ── Synthesis API (Track 4 — Situation Reports) ──────────────────────────────
+
+export interface SitrepEntity {
+  object_id: string;
+  class: string;
+  frames_tracked: number;
+  speed_max_kmh: number;
+  speed_mean_kmh: number;
+  decelerated: boolean;
+  speed_uncertain: boolean;
+  entry_s: number;
+  exit_s: number;
+  colour?: string;
+  possible_collision: boolean;
+  nearest_at_exit?: { object_id: string; class: string; distance_m: number };
+}
+
+export interface SitrepEvidence {
+  event: { event_id: string; source: string | null; trigger_time_s: number | null; duration_s: number | null };
+  scene: { vehicles_tracked: number; persons_tracked: number; class_counts: Record<string, number>; window_s: [number, number] };
+  entities: SitrepEntity[];
+  causal: {
+    target_object: string;
+    target_class: string;
+    target_speed_drop_mps: number;
+    external_drivers: CausalDriver[];
+    interpretation: string;
+  }[] | null;
+}
+
+export interface SitrepResult {
+  status: string;
+  message?: string;
+  event_id?: string;
+  report: string | null;
+  evidence?: SitrepEvidence;
+}
+
+/**
+ * Build the evidence packet and (if $LLM_API_KEY is set) generate the SitRep (Track 4)
+ */
+export async function generateSitrep(eventId: string): Promise<SitrepResult> {
+  const res = await fetch(`${API_BASE}/api/synthesis/${eventId}`, { method: 'POST' });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = body.detail;
+    } catch { /* use statusText fallback */ }
+    throw new Error(`Synthesis failed: ${detail}`);
+  }
+  return res.json();
+}
+
+/**
+ * Fetch a previously-generated SitRep for an event, if one exists
+ */
+export async function fetchSitrep(eventId: string): Promise<SitrepResult | null> {
+  const res = await fetch(`${API_BASE}/api/synthesis/${eventId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Failed to fetch SitRep: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 /**
  * Fetch system configuration
  */

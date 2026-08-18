@@ -1,10 +1,11 @@
 """
-Track 2: Causal Engine — target-centric causal discovery over event kinematics.
+Track 2: Causal Engine — multi-target causal discovery over event kinematics.
 
-Loads an event's causal CSV, identifies the event-defining vehicle (the largest
-sustained speed drop = the one that "braked"), builds a compact set of
-relative-kinematic variables around it, and runs PCMCI+ (tigramite) to find which
-variables causally drive the target's speed changes, and at what time lag.
+Loads an event's causal CSV, ranks up to `causal.max_targets` candidate vehicles
+(each with a sustained speed drop = "braked"), and for each builds a compact set of
+relative-kinematic variables and runs PCMCI+ (tigramite) to find which variables
+causally drive that target's speed changes, and at what time lag. tau_max and
+pc_alpha adapt to each target's usable timestep count rather than being fixed.
 
 Speed-primary: on monocular BEV, speed is the reliable signal while acceleration is
 a noisy derivative, so the variables are speeds and gaps — not accelerations.
@@ -78,14 +79,17 @@ def _lead_present_fraction(target_oid: str, series: dict, frames: list, lane_tol
     return with_lead / valid if valid else 0.0
 
 
-def _select_target(series: dict, min_len: int, frames: list, lane_tol: float):
+def _select_targets(series: dict, min_len: int, frames: list, lane_tol: float, cfg) -> list[tuple]:
     """
-    Pick the analysis target: the vehicle whose braking can plausibly be *explained*.
+    Rank candidate analysis targets: vehicles whose braking can plausibly be *explained*.
 
-    Prefers vehicles that are following someone (a lead is present ≥30% of their
-    frames) — a reactor's speed drop can have an in-scene cause, whereas the
-    frontmost braker cannot. Among the preferred pool, take the largest sustained
-    speed drop. Falls back to the largest drop overall if nobody has a lead.
+    Every vehicle with a sustained speed drop clearing `cfg.min_speed_drop_mps` is a
+    candidate (falls back to all candidates if none clear the floor, so a scene with
+    only subtle drops still gets analyzed rather than short-circuiting to no_target).
+    Followers (a lead is present ≥ cfg.follower_lead_fraction_threshold of their
+    frames) are ranked first — a reactor's speed drop can have an in-scene cause,
+    whereas the frontmost braker cannot — then non-followers, each group by drop
+    size descending. Capped at `cfg.max_targets`.
     """
     candidates = []
     for oid, s in series.items():
@@ -96,18 +100,21 @@ def _select_target(series: dict, min_len: int, frames: list, lane_tol: float):
         if not np.isfinite(s["Pos_X_m"].to_numpy(dtype=float)).any():
             continue  # need near-field (non-gated) positions
         vv = v[valid]
-        if float(np.nanmax(vv)) > settings.causal.max_plausible_speed_mps:
+        if float(np.nanmax(vv)) > cfg.max_plausible_speed_mps:
             continue  # implausible peak speed → projection/tracking spike, not a real vehicle
         drop = float((np.maximum.accumulate(vv) - vv).max())
         lead_frac = _lead_present_fraction(oid, series, frames, lane_tol)
         candidates.append((oid, drop, lead_frac))
 
     if not candidates:
-        return None
-    followers = [c for c in candidates if c[2] >= 0.3]
-    pool = followers if followers else candidates
-    oid, drop, lead_frac = max(pool, key=lambda c: c[1])
-    return oid, drop, lead_frac
+        return []
+    meaningful = [c for c in candidates if c[1] >= cfg.min_speed_drop_mps]
+    pool = meaningful if meaningful else candidates
+    followers = sorted((c for c in pool if c[2] >= cfg.follower_lead_fraction_threshold),
+                        key=lambda c: -c[1])
+    others = sorted((c for c in pool if c[2] < cfg.follower_lead_fraction_threshold),
+                     key=lambda c: -c[1])
+    return (followers + others)[:cfg.max_targets]
 
 
 def _forward_dir(s: pd.DataFrame) -> np.ndarray:
@@ -171,10 +178,10 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
             "nn_gap": nn_gap, "nn_speed": nn_speed}
 
 
-def _assemble(cols: dict) -> tuple[np.ndarray, list[str]]:
+def _assemble(cols: dict, min_presence_frac: float) -> tuple[np.ndarray, list[str]]:
     """
-    Keep tgt_speed plus variables that are present ≥50% and non-constant; restrict to
-    frames where tgt_speed is finite; interpolate short gaps; flag residual missing.
+    Keep tgt_speed plus variables that are present ≥ min_presence_frac and non-constant;
+    restrict to frames where tgt_speed is finite; interpolate short gaps; flag residual missing.
     """
     keep_rows = np.isfinite(cols["tgt_speed"])
     names, arrays = [], []
@@ -182,7 +189,7 @@ def _assemble(cols: dict) -> tuple[np.ndarray, list[str]]:
         a = arr[keep_rows]
         finite = np.isfinite(a)
         if name != "tgt_speed":
-            if finite.mean() < 0.5:
+            if finite.mean() < min_presence_frac:
                 continue
             vals = a[finite]
             if vals.size and np.nanstd(vals) < 1e-6:
@@ -206,52 +213,63 @@ class CausalEngine:
         cfg = settings.causal
         series = _object_series(df)
         frames = sorted(int(f) for f in df["Frame_ID"].unique())
-        target = _select_target(series, cfg.min_series_len, frames, cfg.lane_tolerance_m)
-        if target is None:
+        candidates = _select_targets(series, cfg.min_series_len, frames, cfg.lane_tolerance_m, cfg)
+        if not candidates:
             return {"status": "no_target",
                     "message": "No object with enough valid near-field data to analyze."}
-        target_oid, drop, lead_frac = target
-
-        cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m)
-        data, names = _assemble(cols)
-
-        if data.shape[0] < cfg.min_series_len or len(names) < 2:
-            return {"status": "insufficient",
-                    "message": f"Only {data.shape[0]} usable timesteps / {len(names)} variables."}
 
         # ── PCMCI+ (lazy import to keep server startup light) ────────────────
         from tigramite import data_processing as pp
         from tigramite.pcmci import PCMCI
         from tigramite.independence_tests.parcorr import ParCorr
 
-        dataframe = pp.DataFrame(data, var_names=names, missing_flag=MISSING)
-        pcmci = PCMCI(dataframe=dataframe, cond_ind_test=ParCorr(), verbosity=0)
-        res = pcmci.run_pcmciplus(tau_max=cfg.tau_max, pc_alpha=cfg.pc_alpha)
-        graph, val = res["graph"], res["val_matrix"]
+        targets = []
+        for target_oid, drop, lead_frac in candidates:
+            cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m)
+            data, names = _assemble(cols, cfg.min_variable_presence_frac)
+            if data.shape[0] < cfg.min_series_len or len(names) < 2:
+                logger.info("Skipping target %s for %s: only %d timesteps / %d variables",
+                            target_oid, event_id, data.shape[0], len(names))
+                continue
 
-        tj = names.index("tgt_speed")
-        links = []
-        for i in range(len(names)):
-            for tau in range(graph.shape[2]):
-                if i == tj and tau == 0:
-                    continue
-                if graph[i, tj, tau] == "-->":
-                    links.append({"cause": names[i], "lag": int(tau),
-                                  "strength": round(float(val[i, tj, tau]), 3)})
-        links.sort(key=lambda l: -abs(l["strength"]))
+            tau_max = max(2, min(cfg.tau_max, int(data.shape[0] * cfg.tau_max_frame_frac)))
+            dataframe = pp.DataFrame(data, var_names=names, missing_flag=MISSING)
+            pcmci = PCMCI(dataframe=dataframe, cond_ind_test=ParCorr(), verbosity=0)
+            res = pcmci.run_pcmciplus(tau_max=tau_max, pc_alpha=cfg.pc_alpha)
+            graph, val = res["graph"], res["val_matrix"]
 
-        cls = series[target_oid]["Class"].dropna()
+            tj = names.index("tgt_speed")
+            links = []
+            for i in range(len(names)):
+                for tau in range(graph.shape[2]):
+                    if i == tj and tau == 0:
+                        continue
+                    if graph[i, tj, tau] == "-->":
+                        links.append({"cause": names[i], "lag": int(tau),
+                                      "strength": round(float(val[i, tj, tau]), 3)})
+            links.sort(key=lambda l: -abs(l["strength"]))
+
+            cls = series[target_oid]["Class"].dropna()
+            targets.append({
+                "target_object": target_oid,
+                "target_class": str(cls.iloc[0]) if not cls.empty else None,
+                "target_speed_drop_mps": round(drop, 2),
+                "target_lead_fraction": round(lead_frac, 2),
+                "variables": names,
+                "n_timesteps": int(data.shape[0]),
+                "tau_max": tau_max,
+                "pc_alpha_used": res.get("optimal_alpha", cfg.pc_alpha),
+                "drivers_of_target_speed": links,
+            })
+
+        if not targets:
+            return {"status": "insufficient",
+                    "message": "No candidate target had enough usable timesteps/variables after filtering."}
+
         result = {
             "status": "ok",
             "event_id": event_id,
-            "target_object": target_oid,
-            "target_class": str(cls.iloc[0]) if not cls.empty else None,
-            "target_speed_drop_mps": round(drop, 2),
-            "target_lead_fraction": round(lead_frac, 2),
-            "variables": names,
-            "n_timesteps": int(data.shape[0]),
-            "tau_max": cfg.tau_max,
-            "drivers_of_target_speed": links,
+            "targets": targets,
             "note": "PCMCI+ over a short (~100-step) clip — treat links as ranked hypotheses, not proof.",
         }
         self._persist(event_id, result)
@@ -262,8 +280,9 @@ class CausalEngine:
         out = settings.paths.dataset_dir / event_id / "causal_graph.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        logger.info("Causal graph for %s: %d driver(s) of target speed",
-                    event_id, len(result.get("drivers_of_target_speed", [])))
+        n_links = sum(len(t.get("drivers_of_target_speed", [])) for t in result.get("targets", []))
+        logger.info("Causal graph for %s: %d target(s), %d driver link(s) total",
+                    event_id, len(result.get("targets", [])), n_links)
 
 
 _engine: CausalEngine | None = None

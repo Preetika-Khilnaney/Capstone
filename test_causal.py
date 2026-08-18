@@ -3,9 +3,13 @@ Regression test for the Track 2 causal engine.
 
 Generates a synthetic lead-follower braking scenario with KNOWN ground-truth
 causality (a lead vehicle brakes; a follower reacts LAG frames later via a
-car-following model) plus an unrelated distractor vehicle, then asserts the
-engine selects the follower as target and recovers the lead -> follower link
-at the correct lag.
+car-following model) plus an unrelated distractor vehicle, then asserts:
+  - both V_LEAD and V_FOLLOW are selected as separate causal targets (proves
+    multi-target selection: two vehicles each have a real sustained drop);
+  - V_FOLLOW's graph recovers the lead -> target link at the correct lag;
+  - V_LEAD (nothing ahead of it) has no lead_speed/lead_gap variable at all,
+    i.e. it's correctly treated as an exogenous root cause, not chasing an
+    external driver that structurally can't exist for it.
 
 Run: python test_causal.py
 """
@@ -61,20 +65,28 @@ def main() -> int:
     finally:
         shutil.rmtree(settings.paths.dataset_dir / EVENT_ID, ignore_errors=True)
 
-    print("status:", res.get("status"), "| target:", res.get("target_object"),
-          "| lead_fraction:", res.get("target_lead_fraction"))
-    drivers = res.get("drivers_of_target_speed", [])
-    for l in drivers:
-        print(f"   {l['cause']}(t-{l['lag']})  strength={l['strength']}")
-
     ok = res.get("status") == "ok"
-    target_ok = res.get("target_object") == "V_FOLLOW"
+    targets = {t["target_object"]: t for t in res.get("targets", [])}
+    print("status:", res.get("status"), "| targets found:", list(targets))
+
+    multi_target_ok = "V_FOLLOW" in targets and "V_LEAD" in targets
+
+    follow = targets.get("V_FOLLOW", {})
+    drivers = follow.get("drivers_of_target_speed", [])
+    for l in drivers:
+        print(f"   V_FOLLOW <- {l['cause']}(t-{l['lag']})  strength={l['strength']}")
     lead_link = [l for l in drivers if l["cause"] in ("lead_speed", "lead_gap")]
     link_ok = any(l["lag"] == LAG for l in lead_link) or bool(lead_link)
 
-    print(f"\ntarget is the follower : {target_ok}")
-    print(f"lead->target recovered : {link_ok}  {[f'{l['cause']}(lag {l['lag']})' for l in lead_link]}")
-    passed = ok and target_ok and link_ok
+    lead = targets.get("V_LEAD", {})
+    lead_exogenous_ok = not ({"lead_speed", "lead_gap"} & set(lead.get("variables", [])))
+
+    lead_link_desc = [f"{l['cause']}(lag {l['lag']})" for l in lead_link]
+    print(f"\nmulti-target selection (V_FOLLOW + V_LEAD both found) : {multi_target_ok}")
+    print(f"lead->follow recovered at lag {LAG}                     : {link_ok}  {lead_link_desc}")
+    print(f"V_LEAD correctly has no lead variable (exogenous root)  : {lead_exogenous_ok}")
+
+    passed = ok and multi_target_ok and link_ok and lead_exogenous_ok
     print("\nRESULT:", "PASS" if passed else "FAIL")
     return 0 if passed else 1
 

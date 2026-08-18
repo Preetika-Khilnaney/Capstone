@@ -112,12 +112,17 @@ class RAGConfig:
 
 @dataclass(frozen=True)
 class CausalConfig:
-    """Track 2 — target-centric PCMCI+ causal discovery parameters."""
-    tau_max: int = 5              # max lag in frames (0.5s at 10 FPS)
-    pc_alpha: float = 0.05        # PCMCI+ significance level
+    """Track 2 — multi-target PCMCI+ causal discovery parameters."""
+    tau_max: int = 5              # max lag in frames (0.5s at 10 FPS), upper bound before adaptive clamping
+    tau_max_frame_frac: float = 0.12  # adaptive cap: min(tau_max, n_timesteps * this fraction)
+    pc_alpha: float | None = None  # None = tigramite auto-selects over [0.001,0.005,0.01,0.025,0.05] via information criterion
     min_series_len: int = 20      # min valid frames for an object to be a candidate
     lane_tolerance_m: float = 4.0 # lateral tolerance for "lead vehicle" (same-lane) detection
     max_plausible_speed_mps: float = 25.0  # reject targets whose peak speed exceeds this (~90 km/h; above = projection/tracking spike in surveillance BEV)
+    follower_lead_fraction_threshold: float = 0.3  # min fraction of frames with a lead present to be treated as a "follower"
+    min_variable_presence_frac: float = 0.5  # a candidate variable must be finite in at least this fraction of frames to be kept
+    min_speed_drop_mps: float = 1.5  # floor for target *candidacy*; if nobody clears it, fall back to the single largest drop
+    max_targets: int = 3          # cap on number of vehicles analyzed (as separate causal targets) per event
 
 
 @dataclass(frozen=True)
