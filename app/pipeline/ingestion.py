@@ -76,7 +76,7 @@ class FrameEventDetector:
         COOLDOWN  — ignore triggers for ``cooldown_seconds`` after an event.
     """
 
-    def __init__(self, source_fps: float):
+    def __init__(self, source_fps: float, total_frames: int | None = None):
         cfg_v = settings.video
         cfg_t = settings.threshold
 
@@ -85,6 +85,18 @@ class FrameEventDetector:
         self.post_frame_count = int(cfg_v.post_trigger_seconds * self.source_fps)
         self.warmup_frame_count = int(cfg_t.warmup_seconds * self.source_fps)
         self.cooldown_frame_count = int(cfg_t.cooldown_seconds * self.source_fps)
+
+        # Auto-scale warmup for short videos: cap to 30% of total frames so
+        # there is always room left to scan for events after warmup.
+        if total_frames is not None and self.warmup_frame_count >= total_frames:
+            min_warmup = max(int(self.source_fps), 30)  # at least ~1 second
+            scaled = max(int(total_frames * 0.3), min_warmup)
+            logger.info(
+                "Auto-scaled warmup: %d -> %d frames (video has %d frames)",
+                self.warmup_frame_count, scaled, total_frames,
+            )
+            self.warmup_frame_count = scaled
+
         self._cfg_t = cfg_t
 
         self.bg_sub = cv2.createBackgroundSubtractorMOG2(
@@ -201,7 +213,8 @@ def scan_for_events(video_path: str) -> list[EventFrameBlock]:
         raise IOError(f"Cannot open video: {video_path}")
 
     source_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    detector = FrameEventDetector(source_fps)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+    detector = FrameEventDetector(source_fps, total_frames=total_frames)
 
     logger.info(
         "Scanning %s | src_fps=%.1f | buffer=%d frames | post=%d frames",

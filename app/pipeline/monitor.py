@@ -127,11 +127,12 @@ class FeedStats:
 class FeedMonitor(threading.Thread):
     """Background per-feed worker: event detection + continuous all-vehicle indexing."""
 
-    def __init__(self, video_id: str, source: str, label: str = ""):
+    def __init__(self, video_id: str, source: str, label: str = "", src_pts: list[list[int]] | None = None):
         super().__init__(daemon=True, name=f"feed-{video_id}")
         self.video_id = video_id
         self.source = source
         self.label = label or video_id
+        self.src_pts = src_pts
         self.stats = FeedStats()
         self._stop = threading.Event()
 
@@ -205,7 +206,7 @@ class FeedMonitor(threading.Thread):
         event_id = f"EVT_{uuid.uuid4().hex[:12].upper()}"
         try:
             insert_event(event_id, 0.0, "", "", "", 0.0, "Processing", self.source)
-            result = process_event(event_id, event)
+            result = process_event(event_id, event, src_pts=self.src_pts)
             finalize_event(event_id, result, event.trigger_time_sec, source_video_path=self.source)
             self.stats.events_triggered += 1
             logger.info("[%s] event %s processed", self.video_id, event_id)
@@ -252,12 +253,12 @@ class FeedManager:
         self._monitors: dict[str, FeedMonitor] = {}
         self._lock = threading.Lock()
 
-    def start(self, video_id: str, source: str, label: str = "") -> bool:
+    def start(self, video_id: str, source: str, label: str = "", src_pts: list[list[int]] | None = None) -> bool:
         with self._lock:
             m = self._monitors.get(video_id)
             if m and m.is_alive():
                 return False
-            monitor = FeedMonitor(video_id, source, label)
+            monitor = FeedMonitor(video_id, source, label, src_pts=src_pts)
             self._monitors[video_id] = monitor
             monitor.start()
             logger.info("Started feed monitor %s (%s)", video_id, source)

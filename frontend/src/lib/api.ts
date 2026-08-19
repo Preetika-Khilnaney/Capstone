@@ -126,11 +126,15 @@ export function getSourceStreamUrl(videoId: string): string {
 /**
  * Trigger the pipeline on a video file
  */
-export async function triggerPipeline(videoPath: string): Promise<{ event_id: string | null; status: string; message: string }> {
+export async function triggerPipeline(videoPath: string, cameraId?: string, srcPts?: number[][]): Promise<{ event_id: string | null; status: string; message: string }> {
+  const payload: any = { video_path: videoPath };
+  if (cameraId) payload.camera_id = cameraId;
+  if (srcPts) payload.src_pts = srcPts;
+
   const res = await fetch(`${API_BASE}/api/pipeline/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ video_path: videoPath }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     let detail = res.statusText;

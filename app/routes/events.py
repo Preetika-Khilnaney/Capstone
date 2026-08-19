@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Track 1"])
 
 
-def _run_pipeline(video_path: str, event_id: str) -> None:
+def _run_pipeline(video_path: str, event_id: str, src_pts: list[list[int]] | None = None) -> None:
     """
     Execute the full 3-phase pipeline as a background task.
     Handles errors gracefully and updates event status on failure.
@@ -48,7 +48,7 @@ def _run_pipeline(video_path: str, event_id: str) -> None:
 
         # ── Phase 1: Perception ──────────────────────────────────────
         logger.info("[%s] Phase 1: Running detection & tracking", event_id)
-        perception_result = process_event(event_id, block)
+        perception_result = process_event(event_id, block, src_pts=src_pts)
 
         # ── Phase 2: Handoff ─────────────────────────────────────────
         logger.info("[%s] Phase 2: Finalizing event", event_id)
@@ -113,7 +113,7 @@ async def run_pipeline(request: PipelineRequest, background_tasks: BackgroundTas
     with _get_connection() as conn:
         conn.execute("UPDATE Master_Event_Log SET Video_ID = ? WHERE Event_ID = ?", (video_id, event_id))
 
-    background_tasks.add_task(_run_pipeline, video_path, event_id)
+    background_tasks.add_task(_run_pipeline, video_path, event_id, request.src_pts)
 
     return PipelineResponse(
         event_id=event_id,

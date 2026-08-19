@@ -53,7 +53,7 @@ def _object_series(df: pd.DataFrame) -> dict:
     return out
 
 
-def _lead_present_fraction(target_oid: str, series: dict, frames: list, lane_tol: float) -> float:
+def _lead_present_fraction(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> float:
     """Fraction of the target's valid frames that have a same-lane vehicle ahead."""
     s = series[target_oid]
     u = _forward_dir(s)
@@ -65,11 +65,11 @@ def _lead_present_fraction(target_oid: str, series: dict, frames: list, lane_tol
         if not np.isfinite(tp).all():
             continue
         valid += 1
-        for o in others.values():
-            if f not in o.index:
+        objects_in_frame = frame_lookup.get(f, [])
+        for oid, op_x, op_y, _ in objects_in_frame:
+            if oid == target_oid:
                 continue
-            row = o.loc[f]
-            op = np.array([row["Pos_X_m"], row["Pos_Y_m"]], dtype=float)
+            op = np.array([op_x, op_y], dtype=float)
             if not np.isfinite(op).all():
                 continue
             r = op - tp
@@ -92,6 +92,16 @@ def _select_targets(series: dict, min_len: int, frames: list, lane_tol: float, c
     size descending. Capped at `cfg.max_targets`.
     """
     candidates = []
+    
+    # Pre-build frame lookup to avoid O(N^2) pandas .loc calls
+    frame_lookup = {}
+    for oid, s in series.items():
+        for row in s.itertuples():
+            f = row.Index
+            if f not in frame_lookup:
+                frame_lookup[f] = []
+            frame_lookup[f].append((oid, row.Pos_X_m, row.Pos_Y_m, row.Velocity_mps))
+
     for oid, s in series.items():
         v = s["Velocity_mps"].to_numpy(dtype=float)
         valid = np.isfinite(v)
@@ -103,7 +113,7 @@ def _select_targets(series: dict, min_len: int, frames: list, lane_tol: float, c
         if float(np.nanmax(vv)) > cfg.max_plausible_speed_mps:
             continue  # implausible peak speed → projection/tracking spike, not a real vehicle
         drop = float((np.maximum.accumulate(vv) - vv).max())
-        lead_frac = _lead_present_fraction(oid, series, frames, lane_tol)
+        lead_frac = _lead_present_fraction(oid, series, frames, lane_tol, frame_lookup)
         candidates.append((oid, drop, lead_frac))
 
     if not candidates:
@@ -128,7 +138,7 @@ def _forward_dir(s: pd.DataFrame) -> np.ndarray:
     return d / n if n > 1e-6 else np.array([0.0, 1.0])
 
 
-def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: float) -> dict:
+def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> dict:
     """
     Build target-centric time series over `frames`:
       tgt_speed  — target's speed (the effect)
@@ -145,7 +155,6 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
     n = len(frames)
     lead_gap = np.full(n, np.nan); lead_speed = np.full(n, np.nan)
     nn_gap = np.full(n, np.nan);   nn_speed = np.full(n, np.nan)
-    others = {oid: s for oid, s in series.items() if oid != target_oid}
 
     for k, f in enumerate(frames):
         tp = tgt_pos[k]
@@ -153,14 +162,17 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
             continue
         best_lead = (np.inf, np.nan)
         best_nn = (np.inf, np.nan)
-        for s in others.values():
-            if f not in s.index:
+        
+        objects_in_frame = frame_lookup.get(f, [])
+        for oid, op_x, op_y, osp in objects_in_frame:
+            if oid == target_oid:
                 continue
-            row = s.loc[f]
-            op = np.array([row["Pos_X_m"], row["Pos_Y_m"]], dtype=float)
+            
+            op = np.array([op_x, op_y], dtype=float)
             if not np.isfinite(op).all():
                 continue
-            osp = float(row["Velocity_mps"]) if np.isfinite(row["Velocity_mps"]) else np.nan
+                
+            osp = float(osp) if np.isfinite(osp) else np.nan
             r = op - tp
             dist = float(np.linalg.norm(r))
             if dist < best_nn[0]:
@@ -169,6 +181,7 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
             lat = abs(float(r[0] * u[1] - r[1] * u[0]))  # lateral offset
             if fwd > 0 and lat < lane_tol and fwd < best_lead[0]:
                 best_lead = (fwd, osp)
+                
         if np.isfinite(best_lead[0]):
             lead_gap[k], lead_speed[k] = best_lead
         if np.isfinite(best_nn[0]):
@@ -223,9 +236,18 @@ class CausalEngine:
         from tigramite.pcmci import PCMCI
         from tigramite.independence_tests.parcorr import ParCorr
 
+        # Pre-build frame lookup to avoid O(N^2) pandas .loc calls
+        frame_lookup = {}
+        for oid, s in series.items():
+            for row in s.itertuples():
+                f = row.Index
+                if f not in frame_lookup:
+                    frame_lookup[f] = []
+                frame_lookup[f].append((oid, row.Pos_X_m, row.Pos_Y_m, row.Velocity_mps))
+
         targets = []
         for target_oid, drop, lead_frac in candidates:
-            cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m)
+            cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m, frame_lookup)
             data, names = _assemble(cols, cfg.min_variable_presence_frac)
             if data.shape[0] < cfg.min_series_len or len(names) < 2:
                 logger.info("Skipping target %s for %s: only %d timesteps / %d variables",

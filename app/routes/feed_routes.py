@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.database import get_video_source
 from app.pipeline.monitor import get_feed_manager
+from app.models import FeedStartRequest
 
 router = APIRouter(prefix="/api/feeds", tags=["Feeds (Camera Ingestion)"])
 
@@ -16,12 +17,12 @@ async def list_feeds():
 
 
 @router.post("/{video_id}/start")
-async def start_feed(video_id: str):
+async def start_feed(video_id: str, request: FeedStartRequest):
     """Start continuous monitoring of a registered video source (file path or stream URL)."""
     source = get_video_source(video_id)
     if not source:
         raise HTTPException(status_code=404, detail=f"Source not found: {video_id}")
-    started = get_feed_manager().start(video_id, source["File_Path"], source.get("Label", ""))
+    started = get_feed_manager().start(video_id, source["File_Path"], source.get("Label", ""), src_pts=request.src_pts)
     if not started:
         raise HTTPException(status_code=409, detail=f"Feed {video_id} is already running")
     return {"status": "started", "video_id": video_id, "source": source["File_Path"]}

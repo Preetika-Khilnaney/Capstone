@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class VideoConfig:
     """Timing and FPS constants for event clips."""
-    pre_buffer_seconds: float = 4.0
+    pre_buffer_seconds: float = 10.0
     post_trigger_seconds: float = 6.0
     target_fps: int = 10
     jpeg_quality: int = 85
@@ -91,8 +91,8 @@ class ProjectionConfig:
     set to NaN and excluded from kinematics/causal analysis. Bounds are generous
     around the quad (X∈[0,3.5], Y∈[0,14] for the current calibration).
     """
-    min_depth_m: float = -10.0        # world Y (longitudinal) lower bound
-    max_depth_m: float = 35.0         # world Y beyond this is extrapolation garbage
+    min_depth_m: float = -100.0       # world Y (longitudinal) lower bound
+    max_depth_m: float = 100.0        # world Y beyond this is extrapolation garbage
     max_abs_lateral_m: float = 25.0   # |world X| beyond this → NaN
 
 

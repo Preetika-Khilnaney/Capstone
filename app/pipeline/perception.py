@@ -95,6 +95,20 @@ def _load_homography() -> tuple[np.ndarray | None, tuple[int, int] | None]:
     return H, ref
 
 
+def _calculate_homography(src_pts: list[list[int]]) -> tuple[np.ndarray, tuple[int, int]]:
+    """
+    Calculate the homography matrix on the fly using the provided source points.
+    Assumes standard 3.5m lane width and 14.0m longitudinal depth on a reference.
+    """
+    src = np.float32(src_pts)
+    lw, L = 3.5, 14.0
+    dst = np.float32([[0, 0], [lw, 0], [lw, L], [0, L]])
+    H = cv2.getPerspectiveTransform(src, dst)
+    ref = None
+    logger.info("Calculated dynamic homography matrix on the fly (no resolution scaling)")
+    return H, ref
+
+
 def _decode_frames(encoded_frames: list[bytes]) -> list[np.ndarray]:
     """Decode JPEG buffers into arrays."""
     decoded = []
@@ -116,7 +130,7 @@ def _pixel_to_world(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     return transformed.reshape(-1, 2)
 
 
-def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResult:
+def process_event(event_id: str, frame_block: EventFrameBlock, src_pts: list[list[int]] | None = None) -> PerceptionResult:
     """
     Run YOLO + BoT-SORT on a downsampled event clip and build a flat DataFrame.
 
@@ -157,7 +171,10 @@ def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResu
 
     # ── Load model & homography ──────────────────────────────────────────
     model = YOLO(_resolve_yolo_model())
-    H, H_ref = _load_homography()
+    if src_pts:
+        H, H_ref = _calculate_homography(src_pts)
+    else:
+        H, H_ref = _load_homography()
 
     # Scale detection pixels to the homography's calibration resolution. Guards
     # against the calibration being picked at a different resolution than the
