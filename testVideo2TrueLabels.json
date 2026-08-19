@@ -1,0 +1,107 @@
+{
+  "metadata": {
+    "event_type": "Traffic Accident / Two-Wheeler Skid",
+    "source": "Traffic Surveillance / Cyberabad Traffic Police",
+    "video_duration_seconds": 29
+  },
+  "entities": [
+    {
+      "id": "E1",
+      "name": "Motorcycle",
+      "type": "Vehicle"
+    },
+    {
+      "id": "E2",
+      "name": "Motorcycle Rider",
+      "type": "Person"
+    },
+    {
+      "id": "E3",
+      "name": "Pillion Passenger",
+      "type": "Person"
+    },
+    {
+      "id": "E4",
+      "name": "White SUV (Innova)",
+      "type": "Vehicle"
+    },
+    {
+      "id": "E5",
+      "name": "Silver Sedan",
+      "type": "Vehicle"
+    },
+    {
+      "id": "E6",
+      "name": "Traffic Flow (Upstream)",
+      "type": "Traffic Stream"
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "N1",
+      "timestamp": "00:00 - 00:11",
+      "event": "Normal traffic progression along multi-lane carriageway",
+      "involved_entities": ["E1", "E2", "E3", "E4", "E5", "E6"],
+      "state": "Stable"
+    },
+    {
+      "node_id": "N2",
+      "timestamp": "00:12 - 00:13",
+      "event": "Sudden deceleration and loss of traction/balance by the motorcycle",
+      "involved_entities": ["E1", "E2"],
+      "state": "Critical / Trigger"
+    },
+    {
+      "node_id": "N3",
+      "timestamp": "00:14 - 00:16",
+      "event": "Motorcycle falls and skids across the lane; rider and passenger crash onto the asphalt",
+      "involved_entities": ["E1", "E2", "E3"],
+      "state": "Incident"
+    },
+    {
+      "node_id": "N4",
+      "timestamp": "00:15 - 00:18",
+      "event": "Trailing vehicles (White SUV and Silver Sedan) apply defensive braking to avert collision",
+      "involved_entities": ["E4", "E5"],
+      "state": "Hazard Response"
+    },
+    {
+      "node_id": "N5",
+      "timestamp": "00:19 - 00:25",
+      "event": "Rider and pillion recover to their feet, secure dislodged headgear, and assess the fallen motorcycle while traffic diverts",
+      "involved_entities": ["E1", "E2", "E3", "E6"],
+      "state": "Post-Crash Recovery"
+    }
+  ],
+  "causal_relations": [
+    {
+      "source_node": "N2",
+      "target_node": "N3",
+      "relation_type": "DIRECT_CAUSE",
+      "mechanism": "Loss of two-wheeler directional stability and wheel traction caused the vehicle to drop and slide."
+    },
+    {
+      "source_node": "N3",
+      "target_node": "N4",
+      "relation_type": "TRIGGERED_RESPONSE",
+      "mechanism": "Obstruction in active driving lanes prompted immediate evasive braking from adjacent and following motorists."
+    },
+    {
+      "source_node": "N3",
+      "target_node": "N5",
+      "relation_type": "CONSEQUENCE",
+      "mechanism": "Crash resulted in dislodged safety gear and brief traffic obstruction until occupants stood up."
+    }
+  ],
+  "root_cause_analysis": {
+    "primary_factor": "Abrupt braking / traction failure on the two-wheeler leading to a low-side slide",
+    "contributing_factors": [
+      "Moderate traffic density requiring variable speed adjustments",
+      "Proximity to surrounding multi-lane traffic reducing reaction margin"
+    ],
+    "mitigating_factors": [
+      "Adequate following distance maintained by trailing four-wheelers preventing secondary collision",
+      "Occupants were ambulatory and cleared the travel path promptly"
+    ]
+  }
+}
