@@ -158,3 +158,50 @@ per-camera homography, and the `$LLM_API_KEY`/`.env` requirement.
 - No frontend for Track 2 / Track 4 (API-only).
 - Track 4 uses a cloud LLM (Gemini) for now; the interface is provider-agnostic so it can be
   pointed at a local/edge model to become fully edge-deployed.
+
+---
+
+## 15. Incident-anchored episode staging (Track 2 narrative) — branch `incident-anchor`
+
+Working tree + worktree at `/tmp/opencode/capstone-incident-anchor` (branch `incident-anchor`).
+
+| Commit | Change |
+|---|---|
+| `539eff9` | **Incident-anchored episode**: deterministic N1–N5 narrative with typed relations + root-cause primary factor, verified against `testVideo2TrueLabels.json` by the new `test_true_labels.py` harness (PASS) with `test_causal.py` still PASS. |
+
+Why: the causal graph (targets/drivers) answers "who braked because of whom", but the gold
+labels describe a *situation* (Stable → Trigger → Incident → Hazard Response → Recovery). The
+gap was bridged by anchoring everything to the crash machine: the exported CSV is
+**incident-anchored** (t=0 = confirmed motion burst), so scene/stage reason in clip-relative
+seconds and the harness aligns produced N3 to gold N3 (all 5 boundaries within 1.5 s).
+
+Key mechanics:
+
+- **Ingestion** — a burst is now only *confirmed* when a rolling median of inter-frame
+  foreground motion drops to `stop_factor × baseline` within `burst_reject_s` (10 s); the
+  tap-away at 13.10 s on testVideo2 is now the anchor where the tap-away+fall previously
+  produced two ambiguous events. False starts are reverted instead of spamming events.
+- **Perception** — BoT-SORT merges the rider and motorcycle into one track id; perception now
+  splits mixed-class tracks (`V_60` person vs `V_60x3` motorcycle), so the initiator's
+  kinematics are never polluted by the fallen bike's rest positions (which previously flipped
+  the initiator to a non-crash vehicle and NaN'd every velocity estimate).
+- **Scene roles are geometric, not bbox-overlap** — a rider is only labelled `person` after
+  the dismount, so overlap matching fails; roles now use the crash anchor: initiator =
+  motorcycle observed in [-1, +5] s, road direction = ambient 4W flow (never the skidding
+  actor's heading), rider/pillion = persons whose track starts near the anchor and whose
+  position is close to the fall point.
+- **Stage windows** — N2 = burst→skid onset, N3 = onset→stop/track-loss, N4 = trailing 4W
+  with braking lag in `scene.rider_reaction_min_s..max_s`, N5 = responder re-accel /
+  occupants upright / fresh flowing traffic *after* responders bottom out (a far-lane pass
+  during the incident is a bypass, not recovery).
+- **Root cause** — `rootcause.py` guards "speed collapse" vs "observed at rest after the
+  crash anchor" so the primary factor only claims a deceleration when cruise kinematics
+  support it.
+
+Harness: `python test_true_labels.py [EVENT_ID]` — roles present, stage order, boundary
+deviations ≤ 1.5 s vs gold, relations {(N2,DIRECT_CAUSE),(N3,TRIGGERED_RESPONSE),
+(N3,CONSEQUENCE)}, root-cause keyword match. Currently PASS on the deterministic re-run
+(`EVT_5CBE187FAC48`; anchor 13.10 s, clip 3.10–25.03 s).
+
+Also: `testVideo2TrueLabels.json` was a symlink in the parent commit; now tracked as a real
+file in the worktree (content unchanged).
