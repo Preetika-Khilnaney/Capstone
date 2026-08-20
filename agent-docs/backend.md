@@ -136,11 +136,19 @@ POST /api/pipeline/run
 
 All tuning constants live in `app/config.py` as a frozen-dataclass `settings` singleton. Change constants there, not inline. Key config groups:
 - `video` — FPS, buffer sizes, timing
+- `threshold` — MOG2 entropy fallback trigger
+- `incident` — motion "burst-then-stop" trigger (burst/stop/termination knobs)
+- `scene` — episode-staging params (roles, skid, reaction-lag, recovery)
 - `yolo` — model, backend, confidence, device
 - `tracker` — BoT-SORT parameters
+- `interpolation` — track lifespan filter, gap interpolation, velocity smoothing
+- `projection` — reliable-region depth gate
+- `crop` — crop selection
 - `causal` — PCMCI+ parameters
+- `rag` — SigLIP model + LanceDB
 - `synthesis` — LLM endpoint, model, tokens
 - `feed` — Live monitoring parameters
+- `paths` — filesystem locations
 
 ---
 

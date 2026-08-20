@@ -51,17 +51,27 @@ export default function EventDetailView({ params }: { params: Promise<{ id: stri
   if (loading) return <div className={styles.container}>Loading Event Data...</div>;
   if (!event) return <div className={styles.container}>Event Not Found.</div>;
 
-  // Calculate event clip boundaries in the source video timeline
-  // The Trigger_Time is the time in the source video when the event was detected
-  // Pre-buffer = 4s, so clip starts at Trigger_Time - 4
-  // Duration_s tells us total clip length (typically 10s)
-  const preBuffer = 4.0;
-  const eventStartSec = Math.max(0, event.Trigger_Time - preBuffer);
-  const eventEndSec = eventStartSec + (event.Duration_s || 10.0);
-
   // Use source video if available, otherwise fall back to extracted clip
   const hasSourceVideo = !!event.Source_Video_Path;
   const videoUrl = hasSourceVideo ? getSourceVideoUrl(event.Event_ID) : getVideoUrl(event.Event_ID);
+
+  // Event clip boundaries in the source-video timeline. The CSV timestamps are
+  // anchor-relative — frame 0 sits at -pre_buffer_seconds (the incident anchor is
+  // t=0) — so the clip's source-time start/end = Trigger_Time + min/max(Timestamp).
+  // Deriving the window from the CSV (instead of a hardcoded pre-buffer) keeps the
+  // overlay boxes in sync with source playback. Falls back to a 4s pre-buffer
+  // estimate when no CSV is available yet.
+  const csvTimestamps = csvData
+    .map(row => parseFloat(row.Timestamp))
+    .filter(n => Number.isFinite(n));
+  const windowStart = csvTimestamps.length ? Math.min(...csvTimestamps) : null;
+  const windowEnd = csvTimestamps.length ? Math.max(...csvTimestamps) : null;
+  const eventStartSec = hasSourceVideo
+    ? (windowStart !== null ? event.Trigger_Time + windowStart : Math.max(0, event.Trigger_Time - 4.0))
+    : 0;
+  const eventEndSec = hasSourceVideo
+    ? (windowEnd !== null ? event.Trigger_Time + windowEnd : eventStartSec + (event.Duration_s || 10.0))
+    : (event.Duration_s || 10.0);
 
   return (
     <div className={styles.container}>

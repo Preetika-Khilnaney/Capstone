@@ -169,3 +169,5 @@ test_pipeline_api.py
 
 opencode.json
 .agents/*
+.playwright-mcp/*
+yolo_test/*

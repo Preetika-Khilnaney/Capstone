@@ -78,14 +78,14 @@ class SceneConfig:
 @dataclass(frozen=True)
 class YOLOConfig:
     """Detection model parameters."""
-    model_name: str = "yolo11n.pt"
-    confidence: float = 0.35
+    model_name: str = "yolo11s.pt"
+    confidence: float = 0.30
     # COCO class indices: car=2, motorcycle=3, bus=5, truck=7, bicycle=1, person=0
     class_whitelist: tuple[int, ...] = (0, 1, 2, 3, 5, 7)
-    # Inference backend: "openvino" (FP16 IR, ~4-5x faster on Intel CPU) or "pytorch".
+    # Inference backend: "openvino" (INT8 IR, fast + best recall) or "pytorch".
     # OpenVINO falls back to the .pt weights if the exported IR dir is absent.
     backend: str = "openvino"
-    openvino_model_dir: str = "yolo11n_openvino_model"
+    openvino_model_dir: str = "yolo11s_int8_openvino_model"
     # Pin the inference device. Must be explicit: a CUDA-built torch with no usable
     # GPU otherwise mis-detects one and raises "Invalid device id".
     device: str = "cpu"

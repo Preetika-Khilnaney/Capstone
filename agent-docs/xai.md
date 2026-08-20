@@ -33,6 +33,9 @@ Track 4 is the **explainability layer** — it turns structured perception + cau
 **Causal findings (Track 2):**
 - Per-target: speed drop, external drivers (links where cause ≠ `tgt_speed`), interpretation string.
 
+**Episode (Track 2 staging):**
+- Deterministic staged narrative — entities/roles, N1→N5 stage windows, typed relations, root cause (same block under `episode` in `causal_graph.json`).
+
 ### 2. Format Evidence (`_format_evidence`)
 
 Converts the structured evidence dict into a plain-text packet for the LLM:
@@ -49,7 +52,7 @@ INCIDENT INDICATORS (sharp deceleration + abrupt mid-window track loss — possi
 
 CAUSAL ASSESSMENT (Track 2 / PCMCI+):
   Target: car V_01 (speed drop 5.2 m/s).
-    Reactive coupling detected: lead_speed at lag 2 (strength 0.412)
+    Reactive coupling detected: rel_speed at lag 2 (strength 0.412)
 ```
 
 ### 3. Call LLM (`_call_llm`)
@@ -118,8 +121,8 @@ The LLM is instructed to:
 |-----------|---------|-------------|
 | `model` | `gemini-flash-latest` | LLM model name |
 | `base_url` | Google Gemini endpoint | OpenAI-compatible base URL |
-| `max_tokens` | 1024 | Max generation tokens |
+| `max_tokens` | 2500 | Max generation tokens (generous: "thinking" Gemini flash models spend tokens on internal reasoning) |
 | `temperature` | 0.3 | Generation temperature |
 | `api_key_env` | `LLM_API_KEY` | Env var name for API key |
 | `max_entities` | 10 | Max entities in evidence packet |
-| `min_entity_frames` | 5 | Min frames for entity inclusion |
+| `min_entity_frames` | 8 | Min frames for entity inclusion |
