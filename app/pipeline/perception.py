@@ -192,6 +192,7 @@ def process_event(event_id: str, frame_block: EventFrameBlock, src_pts: list[lis
     detection_metas: list[DetectionMeta] = []
     target_frames: list[np.ndarray] = []
     failed_frames = 0
+    track_first_cls: dict[int, int] = {}
 
     # Pre-compute timestamp offset: pre-buffer seconds before trigger
     t_start = -settings.video.pre_buffer_seconds
@@ -238,7 +239,15 @@ def process_event(event_id: str, frame_block: EventFrameBlock, src_pts: list[lis
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
 
             class_label = _COCO_LABELS.get(cls_idx, f"class_{cls_idx}")
-            object_id = f"V_{track_id:02d}"
+
+            # BoT-SORT occasionally merges two distinct objects (e.g. a rider
+            # and the motorcycle) into one track, producing mixed-class rows
+            # under a single ID. Split by class: the first class seen keeps the
+            # base ID, later classes get a deterministic `x<cls>` suffix, so a
+            # track never mixes kinematics of two different objects.
+            first_cls = track_first_cls.setdefault(track_id, cls_idx)
+            object_id = f"V_{track_id:02d}" if cls_idx == first_cls \
+                else f"V_{track_id:02d}x{cls_idx}"
 
             # Bottom-center of bounding box
             bc_x = (x1 + x2) / 2.0

@@ -25,8 +25,6 @@ from app.database import get_event
 
 logger = logging.getLogger(__name__)
 
-MISSING = 999.0  # tigramite missing-value flag
-
 
 def _load_event_df(event_id: str) -> pd.DataFrame | None:
     """Load an event's causal CSV, from the DB path or the conventional location."""
@@ -143,7 +141,8 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
     Build target-centric time series over `frames`:
       tgt_speed  — target's speed (the effect)
       lead_gap   — forward distance to nearest same-lane vehicle ahead
-      lead_speed — that lead vehicle's speed
+      rel_speed  — that lead vehicle's speed minus the target's (car-following
+                   causation is driven by relative speed, not raw speeds)
       nn_gap     — distance to nearest vehicle (any direction)
       nn_speed   — that nearest vehicle's speed
     """
@@ -187,32 +186,42 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
         if np.isfinite(best_nn[0]):
             nn_gap[k], nn_speed[k] = best_nn
 
-    return {"tgt_speed": tgt_speed, "lead_gap": lead_gap, "lead_speed": lead_speed,
+    rel_speed = lead_speed - tgt_speed  # replace, not add: avoids multicollinearity in ParCorr
+
+    return {"tgt_speed": tgt_speed, "lead_gap": lead_gap, "rel_speed": rel_speed,
             "nn_gap": nn_gap, "nn_speed": nn_speed}
 
 
-def _assemble(cols: dict, min_presence_frac: float) -> tuple[np.ndarray, list[str]]:
+def _assemble(cols: dict, min_presence_frac: float) -> tuple[np.ndarray, list[str], np.ndarray]:
     """
-    Keep tgt_speed plus variables that are present ≥ min_presence_frac and non-constant;
-    restrict to frames where tgt_speed is finite; interpolate short gaps; flag residual missing.
+    Keep tgt_speed plus variables that are present ≥ min_presence_frac and
+    non-constant; restrict to frames where tgt_speed is finite; interpolate short
+    gaps. Returns (data, names, observed_mask) with mask True = observed,
+    False = missing (tigramite-native; no 999.0 sentinel).
     """
     keep_rows = np.isfinite(cols["tgt_speed"])
-    names, arrays = [], []
+    names, arrays, dropped = [], [], []
     for name, arr in cols.items():
         a = arr[keep_rows]
         finite = np.isfinite(a)
         if name != "tgt_speed":
             if finite.mean() < min_presence_frac:
+                dropped.append((name, f"presence {finite.mean():.2f} < {min_presence_frac}"))
                 continue
             vals = a[finite]
             if vals.size and np.nanstd(vals) < 1e-6:
-                continue  # constant → ParCorr can't use it
+                dropped.append((name, "constant (ParCorr unusable)"))
+                continue
         names.append(name)
         arrays.append(a)
 
     d = pd.DataFrame(np.column_stack(arrays), columns=names)
-    d = d.interpolate(limit=5, limit_direction="both").fillna(MISSING)
-    return d.to_numpy(dtype=float), names
+    d = d.interpolate(limit=5, limit_direction="both")
+    mask = d.notna().to_numpy(dtype=bool)
+    data = d.fillna(0.0).to_numpy(dtype=float)
+    for name, why in dropped:
+        logger.info("Dropped variable %s: %s", name, why)
+    return data, names, mask
 
 
 class CausalEngine:
@@ -248,27 +257,32 @@ class CausalEngine:
         targets = []
         for target_oid, drop, lead_frac in candidates:
             cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m, frame_lookup)
-            data, names = _assemble(cols, cfg.min_variable_presence_frac)
+            data, names, obs_mask = _assemble(cols, cfg.min_variable_presence_frac)
             if data.shape[0] < cfg.min_series_len or len(names) < 2:
                 logger.info("Skipping target %s for %s: only %d timesteps / %d variables",
                             target_oid, event_id, data.shape[0], len(names))
                 continue
+            logger.info("Target %s: %d timesteps × %d variables: %s | observed-mask "
+                        "coverage %.2f", target_oid, data.shape[0], len(names), names,
+                        float(obs_mask.mean()))
 
             tau_max = max(2, min(cfg.tau_max, int(data.shape[0] * cfg.tau_max_frame_frac)))
-            dataframe = pp.DataFrame(data, var_names=names, missing_flag=MISSING)
+            dataframe = pp.DataFrame(data, var_names=names, mask=~obs_mask)
             pcmci = PCMCI(dataframe=dataframe, cond_ind_test=ParCorr(), verbosity=0)
             res = pcmci.run_pcmciplus(tau_max=tau_max, pc_alpha=cfg.pc_alpha)
             graph, val = res["graph"], res["val_matrix"]
 
             tj = names.index("tgt_speed")
+            pre_links = [(i, tau) for i in range(len(names)) for tau in range(graph.shape[2])
+                         if graph[i, tj, tau] == "-->"]
+            logger.info("Target %s: PCMCI+ found %d candidate links (pre self-link filter)",
+                        target_oid, len(pre_links))
             links = []
-            for i in range(len(names)):
-                for tau in range(graph.shape[2]):
-                    if i == tj and tau == 0:
-                        continue
-                    if graph[i, tj, tau] == "-->":
-                        links.append({"cause": names[i], "lag": int(tau),
-                                      "strength": round(float(val[i, tj, tau]), 3)})
+            for i, tau in pre_links:
+                if i == tj:
+                    continue  # Fix 1: all self-links dropped (autoregression is trivially true)
+                links.append({"cause": names[i], "lag": int(tau),
+                              "strength": round(float(val[i, tj, tau]), 3)})
             links.sort(key=lambda l: -abs(l["strength"]))
 
             cls = series[target_oid]["Class"].dropna()
@@ -292,10 +306,21 @@ class CausalEngine:
             "status": "ok",
             "event_id": event_id,
             "targets": targets,
+            "episode": self._build_episode(event_id),
             "note": "PCMCI+ over a short (~100-step) clip — treat links as ranked hypotheses, not proof.",
         }
         self._persist(event_id, result)
         return result
+
+    @staticmethod
+    def _build_episode(event_id: str) -> dict | None:
+        """Stage-level narrative (nodes/relations/root cause) — deterministic, additive."""
+        try:
+            from app.pipeline.stage import build_episode
+            return build_episode(event_id)
+        except Exception as exc:
+            logger.warning("Episode analysis for %s failed (non-fatal): %s", event_id, exc)
+            return None
 
     @staticmethod
     def _persist(event_id: str, result: dict) -> None:
@@ -303,8 +328,9 @@ class CausalEngine:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
         n_links = sum(len(t.get("drivers_of_target_speed", [])) for t in result.get("targets", []))
-        logger.info("Causal graph for %s: %d target(s), %d driver link(s) total",
-                    event_id, len(result.get("targets", [])), n_links)
+        logger.info("Causal graph for %s: %d target(s), %d driver link(s) total, episode=%s",
+                    event_id, len(result.get("targets", [])), n_links,
+                    "present" if result.get("episode") else "absent")
 
 
 _engine: CausalEngine | None = None

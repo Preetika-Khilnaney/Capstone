@@ -9,7 +9,7 @@ const VAR_LABELS: Record<string, string> = {
   tgt_speed: 'Target Speed',
   nn_speed: 'Nearest Speed',
   nn_gap: 'Nearest Gap',
-  lead_speed: 'Lead Speed',
+  rel_speed: 'Rel. Speed',
   lead_gap: 'Lead Gap',
 };
 

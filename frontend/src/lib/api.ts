@@ -206,11 +206,38 @@ export interface CausalTarget {
   drivers_of_target_speed: CausalDriver[];
 }
 
+export interface CausalEpisodeNode {
+  node_id: string;
+  state: string;
+  window_s: [number, number];
+  involved_entities?: string[];
+  evidence?: string[];
+}
+
+export interface CausalEpisodeRelation {
+  source_node: string;
+  target_node: string;
+  relation_type: string;
+  mechanism?: string;
+}
+
+export interface CausalEpisode {
+  entities?: Record<string, unknown>[];
+  nodes: CausalEpisodeNode[];
+  relations: CausalEpisodeRelation[];
+  root_cause?: {
+    primary_factor?: { kind?: string; text?: string };
+    contributing_factors?: string[];
+    mitigating_factors?: string[];
+  };
+}
+
 export interface CausalResult {
   status: string;
   message?: string;
   event_id?: string;
   targets?: CausalTarget[];
+  episode?: CausalEpisode | null;
   note?: string;
 }
 

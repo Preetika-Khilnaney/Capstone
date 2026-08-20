@@ -278,3 +278,86 @@
 .dotDanger { background-color: var(--color-danger); }
 .dotActive { background-color: var(--color-active); }
 .dotMuted { background-color: var(--border-focus); }
+
+/* ── Episode stage chain ─────────────────────────────────────────── */
+
+.episodeBlock {
+  background-color: rgba(59, 130, 246, 0.04);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.stageChain {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.stageNode {
+  flex: 1 1 160px;
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.stageHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stageBadge {
+  background-color: var(--color-active);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.stageName {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.stageWindow {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.stageEvidence {
+  margin: 8px 0 0 16px;
+  padding: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.stageEvidence li {
+  margin-bottom: 3px;
+}
+
+.stageRelations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 0.82rem;
+  color: var(--text-main);
+}
+
+.stageRel {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.stageRelMech {
+  color: var(--text-muted);
+  font-weight: 400;
+}

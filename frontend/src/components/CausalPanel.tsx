@@ -133,6 +133,48 @@ export default function CausalPanel({ eventId }: { eventId: string }) {
 
       {causal && causal.status === 'ok' && (
         <div className={styles.causalResult}>
+          {causal.episode && causal.episode.nodes.length > 0 && (
+            <div className={styles.episodeBlock}>
+              <h3 className={styles.subTitle}>Incident Episode — Stage Chain</h3>
+              {causal.episode.root_cause?.primary_factor && (
+                <p className={styles.caveat}>
+                  Root cause (primary): {causal.episode.root_cause.primary_factor.kind} —{' '}
+                  {causal.episode.root_cause.primary_factor.text}
+                </p>
+              )}
+              <div className={styles.stageChain}>
+                {causal.episode.nodes.map((node) => (
+                  <div key={node.node_id} className={styles.stageNode}>
+                    <div className={styles.stageHeader}>
+                      <span className={styles.stageBadge}>{node.node_id}</span>
+                      <span className={styles.stageName}>{node.state}</span>
+                    </div>
+                    <div className={styles.stageWindow}>
+                      {node.window_s?.[0]}s – {node.window_s?.[1]}s
+                    </div>
+                    {node.evidence && node.evidence.length > 0 && (
+                      <ul className={styles.stageEvidence}>
+                        {node.evidence.map((line, j) => (
+                          <li key={`${node.node_id}-ev-${j}`}>{line}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {causal.episode.relations.length > 0 && (
+                <div className={styles.stageRelations}>
+                  {causal.episode.relations.map((rel, i) => (
+                    <span key={i} className={styles.stageRel}>
+                      {rel.source_node} → {rel.target_node}: {rel.relation_type}
+                      {rel.mechanism ? <span className={styles.stageRelMech}> — {rel.mechanism}</span> : null}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {(causal.targets?.length || 0) > 1 && (
             <p className={styles.caveat}>{causal.targets!.length} causal chains found in this scene.</p>
           )}
@@ -159,20 +201,29 @@ export default function CausalPanel({ eventId }: { eventId: string }) {
 
               <CausalGraph result={target} />
 
-              <table className={styles.driverTable}>
-                <thead>
-                  <tr><th>Cause</th><th>Lag</th><th>Strength</th></tr>
-                </thead>
-                <tbody>
-                  {(target.drivers_of_target_speed || []).map((d, i) => (
-                    <tr key={i}>
-                      <td>{d.cause === 'tgt_speed' ? 'Target’s own past speed' : d.cause}</td>
-                      <td>{d.lag}</td>
-                      <td>{d.strength}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {(target.drivers_of_target_speed || []).length === 0 ? (
+                <p className={styles.caveat}>
+                  No causal link found between this vehicle and the others — its speed change is
+                  explained by its own past only (own-past / non-causal result).
+                </p>
+              ) : (
+                <table className={styles.driverTable}>
+                  <thead>
+                    <tr><th>Cause</th><th>Lag</th><th>Strength</th></tr>
+                  </thead>
+                  <tbody>
+                    {(target.drivers_of_target_speed || [])
+                      .filter((d) => d.cause !== 'tgt_speed')
+                      .map((d, i) => (
+                        <tr key={i}>
+                          <td>{d.cause}</td>
+                          <td>{d.lag}</td>
+                          <td>{d.strength}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           ))}
           {causal.note && <p className={styles.caveat}>{causal.note}</p>}
