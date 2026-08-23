@@ -150,17 +150,27 @@ class RAGConfig:
 
 @dataclass(frozen=True)
 class CausalConfig:
-    """Track 2 — multi-target PCMCI+ causal discovery parameters."""
-    tau_max: int = 15             # max lag in frames (1.5s at 10 FPS; matches real 1-2s reaction latency)
-    tau_max_frame_frac: float = 0.2  # adaptive cap: min(tau_max, n_timesteps * this fraction)
-    pc_alpha: float | None = None  # None = tigramite auto-selects over [0.001,0.005,0.01,0.025,0.05] via information criterion
-    min_series_len: int = 20      # min valid frames for an object to be a candidate
-    lane_tolerance_m: float = 4.0 # lateral tolerance for "lead vehicle" (same-lane) detection
-    max_plausible_speed_mps: float = 25.0  # reject targets whose peak speed exceeds this (~90 km/h; above = projection/tracking spike in surveillance BEV)
-    follower_lead_fraction_threshold: float = 0.3  # min fraction of frames with a lead present to be treated as a "follower"
-    min_variable_presence_frac: float = 0.5  # a candidate variable must be finite in at least this fraction of frames to be kept
-    min_speed_drop_mps: float = 1.5  # floor for target *candidacy*; if nobody clears it, fall back to the single largest drop
-    max_targets: int = 3          # cap on number of vehicles analyzed (as separate causal targets) per event
+    """Track 2 — Full multi-method causal engine parameters."""
+    # PCMCI+ temporal lags
+    tau_min: int = 1              # min lag in frames for PCMCI+
+    tau_max: int = 10             # max lag in frames (1.0s at 10 FPS); adaptive clamped per series length
+    tau_max_frame_frac: float = 0.12  # adaptive cap: min(tau_max, n_timesteps * this fraction)
+    pc_alpha: float | None = None  # None = tigramite auto-selects via information criterion
+
+    # Series quality filters
+    min_series_len: int = 20      # min valid frames for an object to be included
+    min_variable_presence_frac: float = 0.40  # variable must be finite in ≥ this fraction of frames
+
+    # Pairwise interaction gating
+    interaction_distance_m: float = 20.0  # max distance for a pair to be considered interacting
+    lane_tolerance_m: float = 4.0         # lateral tolerance for "lead vehicle" (same-lane) detection
+
+    # Speed/physics sanity checks
+    max_plausible_speed_mps: float = 25.0  # reject entities whose peak speed exceeds this (~90 km/h)
+    min_speed_drop_mps: float = 1.5        # minimum speed drop to flag as a braking event
+
+    # Kinematic smoothing
+    smooth_window: int = 5        # Savitzky-Golay window for smoothing speed/acceleration
 
 
 @dataclass(frozen=True)

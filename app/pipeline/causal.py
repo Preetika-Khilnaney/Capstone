@@ -1,21 +1,29 @@
 """
-Track 2: Causal Engine — multi-target causal discovery over event kinematics.
+causal.py — Track 2: Full Causal Engine orchestrator.
 
-Loads an event's causal CSV, ranks up to `causal.max_targets` candidate vehicles
-(each with a sustained speed drop = "braked"), and for each builds a compact set of
-relative-kinematic variables and runs PCMCI+ (tigramite) to find which variables
-causally drive that target's speed changes, and at what time lag. tau_max and
-pc_alpha adapt to each target's usable timestep count rather than being fixed.
+Orchestrates the complete pipeline:
+  1. Load kinematic CSV
+  2. Enrich kinematics (vx, vy, ax, ay, acceleration, heading)
+  3. Build pairwise interaction features
+  4. Build PCMCI+ / LiNGAM / GES / CausalForest variable matrices
+  5. Run all available statistical causal discovery methods
+  6. Build multi-method consensus graph
+  7. Extract temporal events (per-entity + pairwise)
+  8. Build event-level causal chain
+  9. Localize event onset (earliest physically-supported frame)
+  10. Construct final causal graph JSON
+  11. Generate human-readable explanation
+  12. Persist all outputs
 
-Speed-primary: on monocular BEV, speed is the reliable signal while acceleration is
-a noisy derivative, so the variables are speeds and gaps — not accelerations.
-
-NOTE: an event clip is ~100 timesteps, which is short for causal discovery. Results
-are ranked hypotheses, not proof.
+API surface (unchanged):
+  get_causal_engine().analyze_event(event_id) -> dict
+  get_causal_engine().get_graph(event_id) -> dict
 """
+
 import json
 import logging
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,13 +31,35 @@ import pandas as pd
 from app.config import settings
 from app.database import get_event
 
+# Sub-modules
+from app.pipeline.causal_kinematics import enrich_kinematics, compute_pairwise_features
+from app.pipeline.causal_discovery import (
+    run_pcmci_plus,
+    run_lingam,
+    run_ges,
+    run_causal_forest,
+    build_consensus,
+)
+from app.pipeline.causal_events import (
+    extract_entity_events,
+    extract_pairwise_events,
+    build_event_causal_chain,
+    EventOnsetLocalizer,
+    generate_explanation,
+    TemporalEvent,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def _load_event_df(event_id: str) -> pd.DataFrame | None:
-    """Load an event's causal CSV, from the DB path or the conventional location."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_event_df(event_id: str) -> Optional[pd.DataFrame]:
+    """Load the event's causal CSV from DB-registered path or default location."""
     ev = get_event(event_id)
-    csv_path: Path | None = None
+    csv_path: Optional[Path] = None
     if ev and ev.get("Causal_CSV_Path"):
         p = Path(ev["Causal_CSV_Path"])
         csv_path = p if p.exists() else None
@@ -41,340 +71,559 @@ def _load_event_df(event_id: str) -> pd.DataFrame | None:
     return pd.read_csv(csv_path)
 
 
-def _object_series(df: pd.DataFrame) -> dict:
-    """{Object_ID: DataFrame indexed by Frame_ID with position/velocity/class}."""
-    out = {}
-    for oid, sub in df.groupby("Object_ID"):
-        out[oid] = sub.set_index("Frame_ID")[
-            ["Pos_X_m", "Pos_Y_m", "Velocity_mps", "Class"]
-        ].sort_index()
-    return out
+def _fps_from_df(df: pd.DataFrame) -> float:
+    """Estimate FPS from timestamp column; fallback to config."""
+    if "Timestamp" in df.columns:
+        ts = pd.to_numeric(df["Timestamp"], errors="coerce").dropna().sort_values()
+    elif "timestamp" in df.columns:
+        ts = pd.to_numeric(df["timestamp"], errors="coerce").dropna().sort_values()
+    else:
+        return float(settings.video.target_fps)
+    if len(ts) < 2:
+        return float(settings.video.target_fps)
+    # Median frame-to-frame interval (per object is tricky; use all rows sorted)
+    diffs = ts.diff().dropna()
+    diffs = diffs[diffs > 0]
+    if len(diffs) == 0:
+        return float(settings.video.target_fps)
+    median_dt = float(diffs.median())
+    return round(1.0 / median_dt, 2) if median_dt > 1e-6 else float(settings.video.target_fps)
 
 
-def _lead_present_fraction(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> float:
-    """Fraction of the target's valid frames that have a same-lane vehicle ahead."""
-    s = series[target_oid]
-    u = _forward_dir(s)
-    tp_all = s.reindex(frames)[["Pos_X_m", "Pos_Y_m"]].to_numpy(dtype=float)
-    others = {oid: o for oid, o in series.items() if oid != target_oid}
-    valid = with_lead = 0
-    for k, f in enumerate(frames):
-        tp = tp_all[k]
-        if not np.isfinite(tp).all():
+def _build_causal_variables(
+    entity_series: Dict[str, pd.DataFrame],
+    pair_series: Dict[Tuple[str, str], pd.DataFrame],
+) -> pd.DataFrame:
+    """
+    Merge entity kinematics + pairwise features into a single wide DataFrame
+    aligned on the UNION of frame_ids (NaN where an entity is absent), suitable
+    for PCMCI+ / LiNGAM / GES.
+
+    Column naming:
+      {oid}_speed, {oid}_acceleration, {oid}_vx, {oid}_vy, {oid}_heading
+      {oid_a}_{oid_b}_distance, ..._closing_speed, ..._relative_speed
+
+    Only entities with enough valid frames are included.
+    """
+    # Find union of all frame IDs across all entities and pairs
+    all_frames: set = set()
+    for oid, sdf in entity_series.items():
+        all_frames.update(sdf["frame_id"].astype(int).tolist())
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    all_frames_sorted = sorted(all_frames)
+    base = pd.DataFrame({"frame_id": all_frames_sorted})
+
+    # Entity columns — only include entities with >= 20 valid speed frames
+    for oid, sdf in entity_series.items():
+        speed_valid = sdf["speed"].notna().sum()
+        if speed_valid < 10:
+            continue  # skip very sparse tracks
+        sdf_idx = sdf.set_index("frame_id")
+        safe_oid = str(oid).replace("-", "_").replace(" ", "_")
+        for col in ["speed", "acceleration", "vx", "vy", "heading", "ax", "ay"]:
+            if col in sdf_idx.columns:
+                base[f"{safe_oid}_{col}"] = base["frame_id"].map(
+                    sdf_idx[col].to_dict()
+                ).astype(float)
+
+    # Pairwise columns
+    for (id_a, id_b), pf in pair_series.items():
+        if len(pf) < 10:
             continue
-        valid += 1
-        objects_in_frame = frame_lookup.get(f, [])
-        for oid, op_x, op_y, _ in objects_in_frame:
-            if oid == target_oid:
-                continue
-            op = np.array([op_x, op_y], dtype=float)
-            if not np.isfinite(op).all():
-                continue
-            r = op - tp
-            if float(r @ u) > 0 and abs(float(r[0] * u[1] - r[1] * u[0])) < lane_tol:
-                with_lead += 1
-                break
-    return with_lead / valid if valid else 0.0
+        pf_idx = pf.set_index("frame_id")
+        label = f"{id_a}_{id_b}".replace("-", "_").replace(" ", "_")
+        for col in ["distance", "closing_speed", "relative_speed", "relative_acceleration", "heading_difference"]:
+            if col in pf_idx.columns:
+                base[f"{label}_{col}"] = base["frame_id"].map(
+                    pf_idx[col].to_dict()
+                ).astype(float)
+
+    return base.sort_values("frame_id").reset_index(drop=True)
 
 
-def _select_targets(series: dict, min_len: int, frames: list, lane_tol: float, cfg) -> list[tuple]:
+def _causal_forest_treatments(
+    entity_series: Dict[str, pd.DataFrame],
+    pair_series: Dict[Tuple[str, str], pd.DataFrame],
+    wide_df: pd.DataFrame,
+) -> List[Dict]:
     """
-    Rank candidate analysis targets: vehicles whose braking can plausibly be *explained*.
-
-    Every vehicle with a sustained speed drop clearing `cfg.min_speed_drop_mps` is a
-    candidate (falls back to all candidates if none clear the floor, so a scene with
-    only subtle drops still gets analyzed rather than short-circuiting to no_target).
-    Followers (a lead is present ≥ cfg.follower_lead_fraction_threshold of their
-    frames) are ranked first — a reactor's speed drop can have an in-scene cause,
-    whereas the frontmost braker cannot — then non-followers, each group by drop
-    size descending. Capped at `cfg.max_targets`.
+    Identify valid treatment/outcome formulations for Causal Forest.
+    Runs the forest and returns a list of result dicts.
     """
-    candidates = []
-    
-    # Pre-build frame lookup to avoid O(N^2) pandas .loc calls
-    frame_lookup = {}
-    for oid, s in series.items():
-        for row in s.itertuples():
-            f = row.Index
-            if f not in frame_lookup:
-                frame_lookup[f] = []
-            frame_lookup[f].append((oid, row.Pos_X_m, row.Pos_Y_m, row.Velocity_mps))
+    from app.pipeline.causal_discovery import run_causal_forest
 
-    for oid, s in series.items():
-        v = s["Velocity_mps"].to_numpy(dtype=float)
-        valid = np.isfinite(v)
-        if valid.sum() < min_len:
+    results = []
+
+    # For each pair: treat "sudden braking of A" as treatment, "braking of B" as outcome
+    for (id_a, id_b), pf in pair_series.items():
+        sa = entity_series.get(id_a)
+        sb = entity_series.get(id_b)
+        if sa is None or sb is None:
             continue
-        if not np.isfinite(s["Pos_X_m"].to_numpy(dtype=float)).any():
-            continue  # need near-field (non-gated) positions
-        vv = v[valid]
-        if float(np.nanmax(vv)) > cfg.max_plausible_speed_mps:
-            continue  # implausible peak speed → projection/tracking spike, not a real vehicle
-        drop = float((np.maximum.accumulate(vv) - vv).max())
-        lead_frac = _lead_present_fraction(oid, series, frames, lane_tol, frame_lookup)
-        candidates.append((oid, drop, lead_frac))
 
-    if not candidates:
-        return []
-    meaningful = [c for c in candidates if c[1] >= cfg.min_speed_drop_mps]
-    pool = meaningful if meaningful else candidates
-    followers = sorted((c for c in pool if c[2] >= cfg.follower_lead_fraction_threshold),
-                        key=lambda c: -c[1])
-    others = sorted((c for c in pool if c[2] < cfg.follower_lead_fraction_threshold),
-                     key=lambda c: -c[1])
-    return (followers + others)[:cfg.max_targets]
+        safe_a = str(id_a).replace("-", "_").replace(" ", "_")
+        safe_b = str(id_b).replace("-", "_").replace(" ", "_")
+        pair_label = f"{safe_a}_{safe_b}"
 
+        treat_col = f"{safe_a}_acceleration"  # large deceleration → sudden braking
+        outcome_col = f"{safe_b}_speed"
+        cov_cols = [
+            f"{pair_label}_distance",
+            f"{pair_label}_closing_speed",
+            f"{safe_a}_speed",
+            f"{safe_b}_acceleration",
+        ]
+        cov_cols = [c for c in cov_cols if c in wide_df.columns]
 
-def _forward_dir(s: pd.DataFrame) -> np.ndarray:
-    """Unit vector of the target's overall travel direction, from first→last valid position."""
-    p = s[["Pos_X_m", "Pos_Y_m"]].to_numpy(dtype=float)
-    p = p[np.isfinite(p).all(axis=1)]
-    if len(p) < 2:
-        return np.array([0.0, 1.0])
-    d = p[-1] - p[0]
-    n = np.linalg.norm(d)
-    return d / n if n > 1e-6 else np.array([0.0, 1.0])
-
-
-def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> tuple[dict, list, list]:
-    """
-    Build target-centric time series over `frames`:
-      tgt_speed  — target's speed (the effect)
-      lead_gap   — forward distance to nearest same-lane vehicle ahead
-      rel_speed  — that lead vehicle's speed minus the target's (car-following
-                   causation is driven by relative speed, not raw speeds)
-      nn_gap     — distance to nearest vehicle (any direction)
-      nn_speed   — that nearest vehicle's speed
-
-    Also returns per-frame vehicle IDs behind the lead and nearest slots so a
-    PCMCI+ variable link can be mapped back onto a physical vehicle.
-    Returns (variable_dict, lead_oids, nn_oids).
-    """
-    tgt = series[target_oid].reindex(frames)
-    u = _forward_dir(series[target_oid])
-    tgt_pos = tgt[["Pos_X_m", "Pos_Y_m"]].to_numpy(dtype=float)
-    tgt_speed = tgt["Velocity_mps"].to_numpy(dtype=float)
-
-    n = len(frames)
-    lead_gap = np.full(n, np.nan); lead_speed = np.full(n, np.nan)
-    nn_gap = np.full(n, np.nan);   nn_speed = np.full(n, np.nan)
-    lead_oids: list[str | None] = [None] * n
-    nn_oids: list[str | None] = [None] * n
-
-    for k, f in enumerate(frames):
-        tp = tgt_pos[k]
-        if not np.isfinite(tp).all():
+        if treat_col not in wide_df.columns or outcome_col not in wide_df.columns:
             continue
-        best_lead = (np.inf, np.nan, None)
-        best_nn = (np.inf, np.nan, None)
-        
-        objects_in_frame = frame_lookup.get(f, [])
-        for oid, op_x, op_y, osp in objects_in_frame:
-            if oid == target_oid:
-                continue
-            
-            op = np.array([op_x, op_y], dtype=float)
-            if not np.isfinite(op).all():
-                continue
-                
-            osp = float(osp) if np.isfinite(osp) else np.nan
-            r = op - tp
-            dist = float(np.linalg.norm(r))
-            if dist < best_nn[0]:
-                best_nn = (dist, osp, oid)
-            fwd = float(r @ u)                          # forward component (ahead > 0)
-            lat = abs(float(r[0] * u[1] - r[1] * u[0]))  # lateral offset
-            if fwd > 0 and lat < lane_tol and fwd < best_lead[0]:
-                best_lead = (fwd, osp, oid)
-                
-        if np.isfinite(best_lead[0]):
-            lead_gap[k], lead_speed[k], lead_oids[k] = best_lead
-        if np.isfinite(best_nn[0]):
-            nn_gap[k], nn_speed[k], nn_oids[k] = best_nn
 
-    rel_speed = lead_speed - tgt_speed  # replace, not add: avoids multicollinearity in ParCorr
-
-    return ({"tgt_speed": tgt_speed, "lead_gap": lead_gap, "rel_speed": rel_speed,
-             "nn_gap": nn_gap, "nn_speed": nn_speed}, lead_oids, nn_oids)
-
-
-def _dominant_vehicle(oid_arr: list, numeric_arr: np.ndarray, keep: np.ndarray,
-                      var_label: str) -> tuple[str | None, float | None]:
-    """Most frequent vehicle occupying a variable slot across the kept frames."""
-    counts: dict[str, int] = {}
-    total = 0
-    for oid, val, kept in zip(oid_arr, numeric_arr, keep):
-        if oid is None or not np.isfinite(val) or not kept:
+        # Create binary treatment: A deceleration threshold
+        tmp = wide_df.copy()
+        tmp[treat_col] = tmp[treat_col].apply(lambda x: float(x) if pd.notna(x) else np.nan)
+        # Treatment = strong deceleration of A
+        acc_vals = tmp[treat_col].dropna()
+        if len(acc_vals) < 30:
             continue
-        counts[oid] = counts.get(oid, 0) + 1
-        total += 1
-    if not counts:
-        logger.info("No physical vehicle identified behind variable %s", var_label)
-        return None, None
-    top_oid, top_n = max(counts.items(), key=lambda kv: kv[1])
-    return top_oid, round(top_n / total, 2)
+        thresh = float(np.percentile(acc_vals, 25))  # bottom quartile = hardest braking
+        tmp["_treatment"] = (tmp[treat_col] < thresh).astype(float)
+
+        res = run_causal_forest(
+            tmp,
+            treatment_col="_treatment",
+            outcome_col=outcome_col,
+            covariate_cols=cov_cols,
+            treatment_threshold=0.5,
+        )
+        res["treatment_description"] = f"Hard braking of {id_a}"
+        res["outcome_description"] = f"Speed of {id_b}"
+        results.append(res)
+
+    return results
 
 
-def _assemble(cols: dict, min_presence_frac: float) -> tuple[np.ndarray, list[str], np.ndarray]:
+def _select_stat_variables(
+    all_var_names: List[str],
+    entity_series: Dict[str, pd.DataFrame],
+    pair_series: Dict[Tuple[str, str], pd.DataFrame],
+    max_vars: int = 60,
+) -> List[str]:
     """
-    Keep tgt_speed plus variables that are present ≥ min_presence_frac and
-    non-constant; restrict to frames where tgt_speed is finite; interpolate short
-    gaps. Returns (data, names, observed_mask) with mask True = observed,
-    False = missing (tigramite-native; no 999.0 sentinel).
+    Select the most causally relevant subset of variables for statistical methods.
+
+    Priority:
+    1. Speed + acceleration for entities with significant speed drops (events)
+    2. Pairwise distance + closing_speed for pairs with min_dist < 5m
+    3. Remaining speed variables up to cap
     """
-    keep_rows = np.isfinite(cols["tgt_speed"])
-    names, arrays, dropped = [], [], []
-    for name, arr in cols.items():
-        a = arr[keep_rows]
-        finite = np.isfinite(a)
-        if name != "tgt_speed":
-            if finite.mean() < min_presence_frac:
-                dropped.append((name, f"presence {finite.mean():.2f} < {min_presence_frac}"))
-                continue
-            vals = a[finite]
-            if vals.size and np.nanstd(vals) < 1e-6:
-                dropped.append((name, "constant (ParCorr unusable)"))
-                continue
-        names.append(name)
-        arrays.append(a)
+    import numpy as np
 
-    d = pd.DataFrame(np.column_stack(arrays), columns=names)
-    d = d.interpolate(limit=5, limit_direction="both")
-    mask = d.notna().to_numpy(dtype=bool)
-    data = d.fillna(0.0).to_numpy(dtype=float)
-    for name, why in dropped:
-        logger.info("Dropped variable %s: %s", name, why)
-    return data, names, mask
+    selected: List[str] = []
+    used_oids: set = set()
 
+    # Score entities by speed drop magnitude
+    entity_scores: List[Tuple[float, str]] = []
+    for oid, sdf in entity_series.items():
+        spd = sdf["speed"].to_numpy(dtype=float)
+        valid = spd[np.isfinite(spd)]
+        if len(valid) < 5:
+            continue
+        drop = float((np.maximum.accumulate(valid) - valid).max())
+        entity_scores.append((drop, oid))
+    entity_scores.sort(reverse=True)
+
+    # Score pairs by minimum distance
+    pair_scores: List[Tuple[float, Tuple[str, str]]] = []
+    for pair, pf in pair_series.items():
+        dist = pf["distance"].to_numpy(dtype=float)
+        min_d = float(np.nanmin(dist)) if np.any(np.isfinite(dist)) else np.inf
+        pair_scores.append((min_d, pair))
+    pair_scores.sort()  # ascending distance = closest pair first
+
+    # 1. Speed + acceleration for top entities
+    for _, oid in entity_scores:
+        safe = oid.replace("-", "_").replace(" ", "_")
+        cols = [f"{safe}_speed", f"{safe}_acceleration"]
+        for c in cols:
+            if c in all_var_names and c not in selected:
+                selected.append(c)
+        used_oids.add(oid)
+        if len(selected) >= max_vars // 2:
+            break
+
+    # 2. Pairwise features for close pairs
+    for min_d, (pa, pb) in pair_scores:
+        if min_d > 10.0:
+            break  # only really close pairs
+        label = f"{pa}_{pb}".replace("-", "_").replace(" ", "_")
+        cols = [f"{label}_distance", f"{label}_closing_speed", f"{label}_relative_speed"]
+        for c in cols:
+            if c in all_var_names and c not in selected:
+                selected.append(c)
+        if len(selected) >= max_vars:
+            break
+
+    # 3. Fill remaining with speed vars
+    for _, oid in entity_scores:
+        safe = oid.replace("-", "_").replace(" ", "_")
+        c = f"{safe}_speed"
+        if c in all_var_names and c not in selected:
+            selected.append(c)
+        if len(selected) >= max_vars:
+            break
+
+    return selected[:max_vars]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CausalEngine
+# ─────────────────────────────────────────────────────────────────────────────
 
 class CausalEngine:
-    """Stateless target-centric causal analysis over a single event's CSV."""
+    """Full Track 2 Causal Engine with multi-method statistical discovery,
+    temporal event extraction, event onset localization, and explanation."""
 
-    def analyze_event(self, event_id: str) -> dict:
-        df = _load_event_df(event_id)
-        if df is None or df.empty:
+    def analyze_event(self, event_id: str) -> Dict[str, Any]:
+        """
+        Run the complete causal analysis pipeline for event_id.
+        Returns a rich causal graph dict and persists it to disk.
+        """
+        df_raw = _load_event_df(event_id)
+        if df_raw is None or df_raw.empty:
             return {"status": "error", "message": f"No causal CSV for {event_id}"}
 
-        cfg = settings.causal
-        series = _object_series(df)
-        frames = sorted(int(f) for f in df["Frame_ID"].unique())
-        candidates = _select_targets(series, cfg.min_series_len, frames, cfg.lane_tolerance_m, cfg)
-        if not candidates:
-            return {"status": "no_target",
-                    "message": "No object with enough valid near-field data to analyze."}
+        fps = _fps_from_df(df_raw)
+        logger.info("Causal engine: event=%s  FPS=%.1f  rows=%d", event_id, fps, len(df_raw))
 
-        # ── PCMCI+ (lazy import to keep server startup light) ────────────────
-        from tigramite import data_processing as pp
-        from tigramite.pcmci import PCMCI
-        from tigramite.independence_tests.parcorr import ParCorr
+        # ── 1. Enrich kinematics ─────────────────────────────────────────────
+        try:
+            entity_series = enrich_kinematics(df_raw, smooth_window=5)
+        except Exception as exc:
+            return {"status": "error", "message": f"Kinematic enrichment failed: {exc}"}
 
-        # Pre-build frame lookup to avoid O(N^2) pandas .loc calls
-        frame_lookup = {}
-        for oid, s in series.items():
-            for row in s.itertuples():
-                f = row.Index
-                if f not in frame_lookup:
-                    frame_lookup[f] = []
-                frame_lookup[f].append((oid, row.Pos_X_m, row.Pos_Y_m, row.Velocity_mps))
+        if len(entity_series) < 1:
+            return {"status": "no_target", "message": "No tracked entities found in kinematic data."}
 
-        targets = []
-        for target_oid, drop, lead_frac in candidates:
-            cols, lead_oids, nn_oids = _build_variables(target_oid, series, frames,
-                                                        cfg.lane_tolerance_m, frame_lookup)
-            data, names, obs_mask = _assemble(cols, cfg.min_variable_presence_frac)
-            if data.shape[0] < cfg.min_series_len or len(names) < 2:
-                logger.info("Skipping target %s for %s: only %d timesteps / %d variables",
-                            target_oid, event_id, data.shape[0], len(names))
-                continue
-            logger.info("Target %s: %d timesteps × %d variables: %s | observed-mask "
-                        "coverage %.2f", target_oid, data.shape[0], len(names), names,
-                        float(obs_mask.mean()))
+        # ── 2. Pairwise features ──────────────────────────────────────────────
+        pair_series = compute_pairwise_features(entity_series)
 
-            tau_max = max(2, min(cfg.tau_max, int(data.shape[0] * cfg.tau_max_frame_frac)))
-            dataframe = pp.DataFrame(data, var_names=names, mask=~obs_mask)
-            pcmci = PCMCI(dataframe=dataframe, cond_ind_test=ParCorr(), verbosity=0)
-            res = pcmci.run_pcmciplus(tau_max=tau_max, pc_alpha=cfg.pc_alpha)
-            graph, val = res["graph"], res["val_matrix"]
+        # ── 3. Build wide causal variable matrix ─────────────────────────────
+        wide_df = _build_causal_variables(entity_series, pair_series)
+        if wide_df.empty:
+            return {
+                "status": "insufficient",
+                "message": "No overlapping frames between tracked entities.",
+            }
 
-            tj = names.index("tgt_speed")
-            pre_links = [(i, tau) for i in range(len(names)) for tau in range(graph.shape[2])
-                         if graph[i, tj, tau] == "-->"]
-            logger.info("Target %s: PCMCI+ found %d candidate links (pre self-link filter)",
-                        target_oid, len(pre_links))
-            keep = np.isfinite(cols["tgt_speed"])
-            links = []
-            for i, tau in pre_links:
-                if i == tj:
-                    continue  # Fix 1: all self-links dropped (autoregression is trivially true)
-                var = names[i]
-                # Map the abstract variable back onto the physical vehicle it was
-                # measured against: lead slot (lead_gap/rel_speed) or nearest slot
-                # (nn_gap/nn_speed). `cause_object` is the dominant occupant.
-                if var in ("lead_gap", "rel_speed"):
-                    cause_oid, cause_frac = _dominant_vehicle(lead_oids, cols["lead_gap"],
-                                                              keep, var)
-                elif var in ("nn_gap", "nn_speed"):
-                    cause_oid, cause_frac = _dominant_vehicle(nn_oids, cols["nn_gap"],
-                                                              keep, var)
-                else:
-                    cause_oid, cause_frac = None, None
-                link = {"cause": var, "lag": int(tau),
-                        "strength": round(float(val[i, tj, tau]), 3)}
-                if cause_oid is not None:
-                    link["cause_object"] = cause_oid
-                    link["cause_object_frac"] = cause_frac
-                links.append(link)
-            links.sort(key=lambda l: -abs(l["strength"]))
+        causal_var_names = [c for c in wide_df.columns if c != "frame_id"]
 
-            cls = series[target_oid]["Class"].dropna()
-            targets.append({
-                "target_object": target_oid,
-                "target_class": str(cls.iloc[0]) if not cls.empty else None,
-                "target_speed_drop_mps": round(drop, 2),
-                "target_lead_fraction": round(lead_frac, 2),
-                "variables": names,
-                "n_timesteps": int(data.shape[0]),
-                "tau_max": tau_max,
-                "pc_alpha_used": res.get("optimal_alpha", cfg.pc_alpha),
-                "drivers_of_target_speed": links,
-            })
+        # ── 4. Select most relevant variables for statistical methods ─────────
+        # With 58 entities we can have 2000+ columns; PCMCI+ becomes too slow.
+        # Select: speed + acceleration for each entity, plus the closest-pair
+        # pairwise features. Cap at 60 variables.
+        MAX_STAT_VARS = 60
+        stat_var_names = _select_stat_variables(
+            causal_var_names, entity_series, pair_series, max_vars=MAX_STAT_VARS
+        )
+        stat_df = wide_df[["frame_id"] + stat_var_names].copy()
 
-        if not targets:
-            return {"status": "insufficient",
-                    "message": "No candidate target had enough usable timesteps/variables after filtering."}
+        # ── 5. Statistical causal discovery ──────────────────────────────────
+        tau_max_cfg = settings.causal.tau_max
+
+        pcmci_res = run_pcmci_plus(stat_df, stat_var_names, tau_max=tau_max_cfg, fps=fps)
+        lingam_res = run_lingam(stat_df, stat_var_names)
+        ges_res = run_ges(stat_df, stat_var_names)
+
+        # Causal Forest (per relevant pair)
+        forest_results = _causal_forest_treatments(entity_series, pair_series, wide_df)
+        # Merge all forest edges into a single result
+        all_forest_edges = []
+        forest_status = "ok" if forest_results else "skipped"
+        for fr in forest_results:
+            if fr.get("status") == "ok":
+                all_forest_edges.extend(fr.get("edges", []))
+        forest_combined = {"status": forest_status, "edges": all_forest_edges, "details": forest_results}
+
+        # CycleNet: not available
+        cyclenet_res = {"status": "unavailable", "reason": "CycleNet not installable as a pip package", "edges": []}
+
+        method_results = {
+            "PCMCI+": pcmci_res,
+            "LiNGAM": lingam_res,
+            "GES": ges_res,
+            "CausalForest": forest_combined,
+            "CycleNet": cyclenet_res,
+        }
+
+        # ── 5. Consensus ──────────────────────────────────────────────────────
+        consensus_edges = build_consensus(method_results, min_support_ratio=0.25)
+
+        # ── 6. Temporal event extraction ──────────────────────────────────────
+        all_events: List[TemporalEvent] = []
+        for oid, sdf in entity_series.items():
+            all_events.extend(extract_entity_events(oid, sdf))
+        for (id_a, id_b), pf in pair_series.items():
+            all_events.extend(extract_pairwise_events(id_a, id_b, pf))
+
+        # ── 7. Event-level causal chain ───────────────────────────────────────
+        event_edges = build_event_causal_chain(all_events, entity_series, pair_series, fps=fps)
+
+        # ── 8. Event onset localization ───────────────────────────────────────
+        localizer = EventOnsetLocalizer()
+        onset_map = localizer.localize(all_events, entity_series, pair_series, fps=fps)
+
+        # ── 9. Build final graph nodes & edges ────────────────────────────────
+        nodes = self._build_nodes(entity_series, all_events, onset_map)
+        statistical_edges = consensus_edges
+        temporal_edges = event_edges
+
+        # ── 10. Explanation ───────────────────────────────────────────────────
+        explanation = generate_explanation(all_events, event_edges, onset_map, entity_series)
+
+        # ── 11. Compute overall confidence ───────────────────────────────────
+        edge_confs = [e["final_confidence"] for e in consensus_edges]
+        event_confs = [e["confidence"] for e in event_edges]
+        all_confs = edge_confs + event_confs
+        overall_conf = round(float(np.mean(all_confs)) if all_confs else 0.0, 4)
+
+        # ── 12. Method status report ──────────────────────────────────────────
+        available = [m for m, r in method_results.items() if r.get("status") == "ok"]
+        failed = [m for m, r in method_results.items() if r.get("status") == "error"]
+        skipped = [m for m, r in method_results.items() if r.get("status") in ("unavailable", "skipped", "insufficient")]
+
+        # Primary event summary (largest collision/contact if exists)
+        primary_evt = self._find_primary_event(all_events, onset_map)
 
         result = {
             "status": "ok",
             "event_id": event_id,
-            "targets": targets,
-            "episode": self._build_episode(event_id),
-            "note": "PCMCI+ over a short (~100-step) clip — treat links as ranked hypotheses, not proof.",
+
+            "fps": fps,
+            "n_entities": len(entity_series),
+            "n_pairs": len(pair_series),
+            "n_causal_vars": len(causal_var_names),
+            "n_timesteps": len(wide_df),
+
+            "primary_event": primary_evt,
+
+            "entities": [
+                {
+                    "object_id": oid,
+                    "class": str(sdf["class"].dropna().iloc[0]) if "class" in sdf.columns and not sdf["class"].dropna().empty else None,
+                    "n_frames": int(sdf["frame_id"].nunique()),
+                    "speed_range_mps": [
+                        round(float(sdf["speed"].min(skipna=True)), 3),
+                        round(float(sdf["speed"].max(skipna=True)), 3),
+                    ] if "speed" in sdf.columns else None,
+                }
+                for oid, sdf in entity_series.items()
+            ],
+
+            "nodes": nodes,
+
+            "statistical_causal_edges": statistical_edges,
+            "temporal_event_edges": temporal_edges,
+
+            "method_results": {
+                m: {
+                    "status": r.get("status"),
+                    "n_edges": len(r.get("edges", [])),
+                    "reason": r.get("reason"),
+                }
+                for m, r in method_results.items()
+            },
+            "available_methods": available,
+            "failed_methods": failed,
+            "skipped_methods": skipped,
+
+            "consensus_edges": consensus_edges,
+
+            "temporal_events": [
+                {
+                    "event_id": e.event_id,
+                    "object_ids": e.object_ids,
+                    "event_type": e.event_type,
+                    "start_frame": e.start_frame,
+                    "end_frame": e.end_frame,
+                    "start_timestamp": e.start_timestamp,
+                    "end_timestamp": e.end_timestamp,
+                    "features": e.features,
+                    "confidence": e.confidence,
+                    "onset": onset_map.get(e.event_id, {}),
+                }
+                for e in all_events
+            ],
+
+            "explanation": explanation,
+            "confidence": overall_conf,
+
+            "note": (
+                "Multi-method causal engine (PCMCI+, LiNGAM, GES, CausalForest). "
+                "Statistical results are ranked hypotheses, not causal proof."
+            ),
         }
-        self._persist(event_id, result)
+
+        self._persist(event_id, result, method_results, consensus_edges)
         return result
 
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _find_primary_event(
+        self,
+        all_events: List[TemporalEvent],
+        onset_map: Dict[str, Dict],
+    ) -> Optional[Dict]:
+        """Return the most significant collision/contact event with onset info."""
+        priority_types = ["COLLISION", "CONTACT", "NEAR_COLLISION", "FALL", "SUDDEN_BRAKING"]
+        for ev_type in priority_types:
+            candidates = [e for e in all_events if e.event_type == ev_type]
+            if candidates:
+                evt = max(candidates, key=lambda e: e.confidence)
+                onset_info = onset_map.get(evt.event_id, {})
+                return {
+                    "event_id": evt.event_id,
+                    "event_type": evt.event_type,
+                    "object_ids": evt.object_ids,
+                    "event_onset": {
+                        "frame": onset_info.get("onset_frame", evt.start_frame),
+                        "timestamp": onset_info.get("onset_timestamp", evt.start_timestamp),
+                        "reason": onset_info.get("onset_reason", "event_start"),
+                    },
+                    "confirmation": {
+                        "frame": onset_info.get("confirmation", {}).get("confirmation_frame", evt.end_frame),
+                        "timestamp": onset_info.get("confirmation", {}).get("confirmation_timestamp", evt.end_timestamp),
+                    },
+                    "confidence": evt.confidence,
+                }
+        return None
+
+    def _build_nodes(
+        self,
+        entity_series: Dict[str, pd.DataFrame],
+        all_events: List[TemporalEvent],
+        onset_map: Dict[str, Dict],
+    ) -> List[Dict]:
+        """Build node list for the causal graph."""
+        nodes = []
+
+        # Entity nodes
+        for oid, sdf in entity_series.items():
+            cls = str(sdf["class"].dropna().iloc[0]) if "class" in sdf.columns and not sdf["class"].dropna().empty else "vehicle"
+            first_ts = float(sdf["timestamp"].min(skipna=True)) if "timestamp" in sdf.columns else None
+            nodes.append({
+                "id": f"entity_{oid}",
+                "label": f"Vehicle {oid}",
+                "type": "object",
+                "object_ids": [oid],
+                "class": cls,
+                "timestamp": first_ts,
+                "confidence": 1.0,
+            })
+
+        # Event nodes
+        for evt in all_events:
+            onset_info = onset_map.get(evt.event_id, {})
+            onset_ts = onset_info.get("onset_timestamp", evt.start_timestamp)
+            onset_frame = onset_info.get("onset_frame", evt.start_frame)
+            nodes.append({
+                "id": evt.event_id,
+                "label": evt.event_type.replace("_", " ").title(),
+                "type": "event",
+                "object_ids": evt.object_ids,
+                "event_type": evt.event_type,
+                "timestamp": onset_ts,
+                "frame": onset_frame,
+                "confidence": evt.confidence,
+                "features": evt.features,
+            })
+
+        return nodes
+
     @staticmethod
-    def _build_episode(event_id: str) -> dict | None:
-        """Stage-level narrative (nodes/relations/root cause) — deterministic, additive."""
-        try:
-            from app.pipeline.stage import build_episode
-            return build_episode(event_id)
-        except Exception as exc:
-            logger.warning("Episode analysis for %s failed (non-fatal): %s", event_id, exc)
+    def _persist(
+        event_id: str,
+        result: Dict,
+        method_results: Dict,
+        consensus_edges: List[Dict],
+    ) -> None:
+        out_dir = settings.paths.dataset_dir / event_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # causal_graph.json
+        (out_dir / "causal_graph.json").write_text(
+            json.dumps(result, indent=2, default=str), encoding="utf-8"
+        )
+
+        # method_results.json (full, untruncated)
+        (out_dir / "method_results.json").write_text(
+            json.dumps(method_results, indent=2, default=str), encoding="utf-8"
+        )
+
+        # consensus_edges.csv
+        if consensus_edges:
+            pd.DataFrame([
+                {
+                    "source": e["source"],
+                    "target": e["target"],
+                    "relationship": e["relationship"],
+                    "lag_frames": e["lag_frames"],
+                    "lag_seconds": e["lag_seconds"],
+                    "support_ratio": e["support_ratio"],
+                    "final_confidence": e["final_confidence"],
+                    "p_value": e.get("p_value"),
+                }
+                for e in consensus_edges
+            ]).to_csv(out_dir / "consensus_edges.csv", index=False)
+
+        # event_timeline.json
+        (out_dir / "event_timeline.json").write_text(
+            json.dumps(result.get("temporal_events", []), indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        # causal_report.json (summary)
+        report = {
+            "event_id": event_id,
+            "status": result["status"],
+            "fps": result["fps"],
+            "n_entities": result["n_entities"],
+            "n_pairs": result["n_pairs"],
+            "available_methods": result["available_methods"],
+            "failed_methods": result["failed_methods"],
+            "skipped_methods": result["skipped_methods"],
+            "n_consensus_edges": len(consensus_edges),
+            "n_temporal_events": len(result.get("temporal_events", [])),
+            "primary_event": result.get("primary_event"),
+            "explanation": result.get("explanation"),
+            "confidence": result.get("confidence"),
+        }
+        (out_dir / "causal_report.json").write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8"
+        )
+
+        logger.info(
+            "Causal engine persisted: %d consensus edges, %d events, conf=%.3f",
+            len(consensus_edges),
+            len(result.get("temporal_events", [])),
+            result.get("confidence", 0.0),
+        )
+
+    def get_graph(self, event_id: str) -> Optional[Dict]:
+        """Load persisted causal graph."""
+        path = settings.paths.dataset_dir / event_id / "causal_graph.json"
+        if not path.exists():
             return None
-
-    @staticmethod
-    def _persist(event_id: str, result: dict) -> None:
-        out = settings.paths.dataset_dir / event_id / "causal_graph.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        n_links = sum(len(t.get("drivers_of_target_speed", [])) for t in result.get("targets", []))
-        logger.info("Causal graph for %s: %d target(s), %d driver link(s) total, episode=%s",
-                    event_id, len(result.get("targets", [])), n_links,
-                    "present" if result.get("episode") else "absent")
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
-_engine: CausalEngine | None = None
+# ─────────────────────────────────────────────────────────────────────────────
+# Singleton
+# ─────────────────────────────────────────────────────────────────────────────
+
+_engine: Optional[CausalEngine] = None
 
 
 def get_causal_engine() -> CausalEngine:

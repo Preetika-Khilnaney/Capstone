@@ -1,14 +1,14 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   analyzeCausal, fetchCausalGraph, generateSitrep, fetchSitrep,
-  CausalEpisodeEntity, CausalResult, SitrepResult,
+  FullCausalResult, SitrepResult, TemporalEvent,
 } from '@/lib/api';
-import CausalEvidenceGraph from './CausalEvidenceGraph';
-import TimeSeriesLink, { TsWindow } from './TimeSeriesLink';
+import CausalGraphD3 from './CausalGraph';
 import styles from './CausalPanel.module.css';
 
+// ── Markdown renderer ─────────────────────────────────────────────────────────
 function renderInline(text: string, keyPrefix: string) {
   return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
     part.startsWith('**') && part.endsWith('**')
@@ -17,11 +17,9 @@ function renderInline(text: string, keyPrefix: string) {
   );
 }
 
-/** Minimal markdown renderer for LLM-written SitReps: **bold** + "- " bullet lists. */
 function renderReport(text: string) {
   const blocks: React.ReactNode[] = [];
   let listBuffer: string[] = [];
-
   function flushList(key: string) {
     if (listBuffer.length === 0) return;
     blocks.push(
@@ -31,7 +29,6 @@ function renderReport(text: string) {
     );
     listBuffer = [];
   }
-
   text.split('\n').forEach((line, idx) => {
     const trimmed = line.trim();
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
@@ -46,50 +43,64 @@ function renderReport(text: string) {
   return blocks;
 }
 
-const STATUS_COPY: Record<string, string> = {
-  no_target: 'No object had enough valid near-field kinematics to analyze as a target.',
-  insufficient: 'Not enough usable timesteps/variables after filtering — kinematics may be too sparse or out of the calibrated region.',
-  error: 'Analysis failed.',
-};
-
-const REL_TYPE_CLASS: Record<string, string> = {
-  DIRECT_CAUSE: styles.stageRelDirect,
-  TRIGGERED_RESPONSE: styles.stageRelTriggered,
-  CONSEQUENCE: styles.stageRelConsequence,
-};
-
-/** Entity chips to show inside a stage node: named actors + collapsed counts. */
-function chipsFor(node: { involved_entities?: string[] }, entities?: CausalEpisodeEntity[]): string[] {
-  if (!entities || !node.involved_entities) return [];
-  const ents = node.involved_entities
-    .map((id) => entities.find((e) => e.id === id))
-    .filter((e): e is CausalEpisodeEntity => !!e);
-  const chips: string[] = [];
-  for (const e of ents) {
-    if (e.role === 'trailing' || e.role === 'aggregate') continue;
-    chips.push(e.role && e.role !== 'vehicle' ? `${e.name} (${e.role})` : e.name);
-  }
-  const trailing = ents.filter((e) => e.role === 'trailing').length;
-  if (trailing > 0) chips.push(`${trailing} trailing vehicles`);
-  for (const e of ents) {
-    if (e.role === 'aggregate') chips.push(`${e.name} — ${e.object_ids.length} vehicles`);
-  }
-  return chips;
+// ── Relationship badge ────────────────────────────────────────────────────────
+function RelBadge({ rel }: { rel: string }) {
+  const colours: Record<string, string> = {
+    causes: 'var(--color-danger)',
+    supports: '#f97316',
+    precedes: 'var(--text-muted)',
+  };
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '1px 6px',
+      borderRadius: '4px',
+      fontSize: '0.7rem',
+      fontWeight: 700,
+      background: colours[rel] || colours.precedes,
+      color: '#fff',
+      textTransform: 'uppercase',
+    }}>
+      {rel}
+    </span>
+  );
 }
 
-export default function CausalPanel({
-  eventId,
-  csvData,
-}: {
-  eventId: string;
-  csvData?: Record<string, string>[];
-}) {
-  const [causal, setCausal] = useState<CausalResult | null>(null);
+// ── Method status pill ────────────────────────────────────────────────────────
+function MethodPill({ name, status, nEdges }: { name: string; status: string; nEdges: number }) {
+  const isOk = status === 'ok';
+  const isSkipped = status === 'unavailable' || status === 'skipped';
+  return (
+    <div style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      padding: '3px 10px',
+      borderRadius: 20,
+      border: `1px solid ${isOk ? 'var(--color-active)' : isSkipped ? 'var(--text-muted)' : 'var(--color-danger)'}`,
+      fontSize: '0.72rem',
+      color: isOk ? 'var(--color-active)' : isSkipped ? 'var(--text-muted)' : 'var(--color-danger)',
+      marginRight: 6,
+      marginBottom: 4,
+    }}>
+      <span>{isOk ? '✓' : isSkipped ? '–' : '✗'}</span>
+      <span>{name}</span>
+      {isOk && <span style={{ opacity: 0.6 }}>({nEdges} edges)</span>}
+    </div>
+  );
+}
+
+// ── Main panel ────────────────────────────────────────────────────────────────
+
+export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string; onSeekFrame?: (frame: number) => void }) {
+  const [causal, setCausal] = useState<FullCausalResult | null>(null);
   const [sitrep, setSitrep] = useState<SitrepResult | null>(null);
   const [causalLoading, setCausalLoading] = useState(false);
   const [sitrepLoading, setSitrepLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialLoad, setInitialLoad] = useState(true);
+  const [hoveredEvent, setHoveredEvent] = useState<TemporalEvent | null>(null);
+  const [activeTab, setActiveTab] = useState<'graph' | 'events' | 'methods' | 'sitrep'>('graph');
 
   useEffect(() => {
     async function load() {
@@ -135,28 +146,12 @@ export default function CausalPanel({
   if (initialLoad) return null;
 
   const flaggedEntities = sitrep?.evidence?.entities.filter((e) => e.possible_collision) || [];
-  const targets = causal?.targets || [];
-  const entities = causal?.episode?.entities;
-
-  const episodeWindows: TsWindow[] = (causal?.episode?.nodes || [])
-    .filter((n) => n.node_id !== 'N1')
-    .map((n) => ({
-      label: `${n.node_id} ${n.state}`,
-      start: n.window_s?.[0] ?? 0,
-      end: n.window_s?.[1] ?? 0,
-    }));
-
-  const entityForOid = (oid: string): CausalEpisodeEntity | undefined =>
-    entities?.find((e) => e.object_ids?.includes(oid));
-
-  const unmappedHint = targets.some((t) =>
-    (t.drivers_of_target_speed || []).some((d) => d.cause !== 'tgt_speed' && !d.cause_object));
-
-  const linkedTargets = targets.filter((t) =>
-    (t.drivers_of_target_speed || []).some((d) => d.cause !== 'tgt_speed' && !!d.cause_object));
+  const hasFullResult = causal && causal.status === 'ok';
+  const primaryEvt = causal?.primary_event;
 
   return (
     <div className={styles.panel}>
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className={styles.panelHeader}>
         <h2 className={styles.sectionTitle}>Causal Reasoning — Why did this happen?</h2>
         <div className={styles.actions}>
@@ -171,187 +166,322 @@ export default function CausalPanel({
 
       {error && <div className={styles.errorBox}>{error}</div>}
 
-      {/* ── Causal graph (Track 2) ─────────────────────────────────────── */}
+      {/* ── Primary event banner ─────────────────────────────────────────── */}
+      {primaryEvt && (
+        <div className={styles.incidentBox} style={{ marginBottom: 12, padding: '10px 16px' }}>
+          <span className={styles.incidentBadge} style={{ marginRight: 10 }}>
+            {primaryEvt.event_type.replace(/_/g, ' ')}
+          </span>
+          <span>
+            Objects: <strong>{primaryEvt.object_ids.join(', ')}</strong>
+            {' · '}Onset: <strong>{primaryEvt.event_onset.timestamp.toFixed(2)}s</strong>
+            {' · '}Confirmed: <strong>{primaryEvt.confirmation.timestamp.toFixed(2)}s</strong>
+            {' · '}Confidence: <strong>{(primaryEvt.confidence * 100).toFixed(0)}%</strong>
+          </span>
+          {onSeekFrame && (
+            <button
+              className={styles.actionBtn}
+              style={{ marginLeft: 12, padding: '2px 10px', fontSize: '0.75rem' }}
+              onClick={() => onSeekFrame(primaryEvt.event_onset.frame)}
+            >
+              ⏭ Jump to onset
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Explanation ───────────────────────────────────────────────────── */}
+      {causal?.explanation && (
+        <div className={styles.reportText} style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-card)', borderRadius: 8, borderLeft: '3px solid var(--color-active)' }}>
+          <p style={{ margin: 0, lineHeight: 1.6, fontSize: '0.88rem' }}>{causal.explanation}</p>
+        </div>
+      )}
+
+      {/* ── Tab bar ───────────────────────────────────────────────────────── */}
+      {hasFullResult && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>
+          {(['graph', 'events', 'methods', 'sitrep'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                padding: '4px 14px',
+                borderRadius: '6px 6px 0 0',
+                border: 'none',
+                background: activeTab === tab ? 'var(--color-active)' : 'transparent',
+                color: activeTab === tab ? '#fff' : 'var(--text-muted)',
+                cursor: 'pointer',
+                fontWeight: activeTab === tab ? 700 : 400,
+                fontSize: '0.8rem',
+              }}
+            >
+              {tab === 'graph' ? '🔗 Graph' : tab === 'events' ? '📋 Events' : tab === 'methods' ? '🔬 Methods' : '📄 SitRep'}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── No result state ───────────────────────────────────────────────── */}
       {!causal && !causalLoading && (
         <div className={styles.emptyState}>No causal analysis has been run yet for this event.</div>
       )}
-
       {causal && causal.status !== 'ok' && (
-        <div className={styles.emptyState}>
-          {STATUS_COPY[causal.status] || causal.message || `Status: ${causal.status}`}
-        </div>
+        <div className={styles.emptyState}>{causal.message || `Status: ${causal.status}`}</div>
       )}
 
-      {causal && causal.status === 'ok' && (
+      {/* ── GRAPH TAB ─────────────────────────────────────────────────────── */}
+      {hasFullResult && activeTab === 'graph' && (
         <div className={styles.causalResult}>
-          {causal.episode && causal.episode.nodes.length > 0 && (
-            <div className={styles.episodeBlock}>
-              <h3 className={styles.subTitle}>Incident Episode — Timeline</h3>
-              {causal.episode.root_cause?.primary_factor && (
-                <p className={styles.rootCauseLine}>
-                  Root cause (primary): {causal.episode.root_cause.primary_factor.kind} —{' '}
-                  {causal.episode.root_cause.primary_factor.text}
-                </p>
-              )}
-              <div className={styles.stageChain}>
-                {causal.episode.nodes.map((node, i) => {
-                  const outgoing = causal.episode!.relations.filter((r) => r.source_node === node.node_id);
-                  const chips = chipsFor(node, entities);
-                  return (
-                    <Fragment key={node.node_id}>
-                      <div className={styles.stageNode}>
-                        <div className={styles.stageHeader}>
-                          <span className={styles.stageBadge}>{node.node_id}</span>
-                          <span className={styles.stageName}>{node.state}</span>
-                        </div>
-                        <div className={styles.stageWindow}>
-                          {node.window_s?.[0]}s – {node.window_s?.[1]}s
-                        </div>
-                        {chips.length > 0 && (
-                          <div className={styles.entityChips}>
-                            {chips.map((c) => <span key={c} className={styles.entityChip}>{c}</span>)}
-                          </div>
-                        )}
-                        {node.evidence && node.evidence.length > 0 && (
-                          <p className={styles.stageEvidenceLine}>{node.evidence[0]}</p>
-                        )}
-                      </div>
-                      {i < causal.episode!.nodes.length - 1 && (
-                        <div className={styles.stageConnector}>
-                          {outgoing.length === 0 && <span className={styles.stageConnMech}>relation not staged</span>}
-                          {outgoing.map((rel) => (
-                            <div key={rel.target_node} className={styles.stageConnItem}>
-                              <span className={`${styles.stageConnLabel} ${REL_TYPE_CLASS[rel.relation_type] || ''}`}>
-                                {rel.relation_type} → {rel.target_node}
-                              </span>
-                              {rel.mechanism && (
-                                <span className={styles.stageConnMech}>{rel.mechanism}</span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </Fragment>
-                  );
-                })}
+          {/* Stats row */}
+          <div className={styles.statRow}>
+            {[
+              ['Entities', causal.n_entities],
+              ['Pairs', causal.n_pairs],
+              ['Variables', causal.n_causal_vars],
+              ['Timesteps', causal.n_timesteps],
+              ['FPS', causal.fps],
+              ['Events', causal.temporal_events?.length ?? 0],
+              ['Consensus Edges', causal.consensus_edges?.length ?? 0],
+              ['Confidence', `${(causal.confidence * 100).toFixed(0)}%`],
+            ].map(([label, value]) => (
+              <div key={String(label)} className={styles.statCard}>
+                <span className={styles.statLabel}>{label}</span>
+                <span className={styles.statValue}>{value}</span>
               </div>
-              {causal.note && <p className={styles.caveat}>{causal.note}</p>}
-            </div>
-          )}
+            ))}
+          </div>
 
-          {targets.length > 0 && (
-            <div className={styles.evidenceBlock}>
-              <h3 className={styles.subTitle}>Causal Evidence Graph</h3>
-              <p className={styles.graphIntro}>
-                Confirmed PCMCI+ links, mapped onto the physical vehicles. The episode initiator is
-                shown at the top even when PCMCI+ did not analyze it directly.
-              </p>
-              <CausalEvidenceGraph targets={targets} entities={entities} />
-              {unmappedHint && (
-                <p className={styles.caveat}>
-                  Some links lack a vehicle mapping (older analysis data) — press “Re-run Causal
-                  Analysis” to populate the physical-vehicle mapping.
-                </p>
+          {/* Causal graph */}
+          <CausalGraphD3
+            result={causal}
+            onSeekFrame={onSeekFrame}
+            onHoverEvent={setHoveredEvent}
+          />
+
+          {/* Hover tooltip */}
+          {hoveredEvent && (
+            <div className={styles.incidentBox} style={{ margin: '8px 0', padding: '8px 14px' }}>
+              <strong>{hoveredEvent.event_type.replace(/_/g, ' ')}</strong>
+              {' · '}Objects: {hoveredEvent.object_ids.join(', ')}
+              {' · '}Onset: {hoveredEvent.onset?.onset_timestamp?.toFixed(2) ?? hoveredEvent.start_timestamp.toFixed(2)}s
+              {' · '}Conf: {(hoveredEvent.confidence * 100).toFixed(0)}%
+              {hoveredEvent.onset?.onset_reason && (
+                <span style={{ fontSize: '0.72rem', opacity: 0.7, marginLeft: 8 }}>
+                  [{hoveredEvent.onset.onset_reason}]
+                </span>
               )}
             </div>
           )}
 
-          {linkedTargets.length > 0 && csvData && csvData.length > 0 && (
-            <div className={styles.evidenceBlock}>
-              <h3 className={styles.subTitle}>Evidence Time Series</h3>
-              <p className={styles.graphIntro}>
-                Cause-vehicle speed (solid) and target speed (dashed) around the incident anchor —
-                the lag arrow shows where the effect manifests.
-              </p>
-              {linkedTargets.map((target) => (
-                <div key={target.target_object} className={styles.tsGroup}>
-                  <h4 className={styles.tsGroupTitle}>
-                    {target.target_object} ({target.target_class}) · speed drop {target.target_speed_drop_mps} m/s
-                  </h4>
-                  {(target.drivers_of_target_speed || [])
-                    .filter((d) => d.cause !== 'tgt_speed' && !!d.cause_object)
-                    .map((d, i) => {
-                      const causeEnt = entityForOid(d.cause_object as string);
-                      return (
-                        <TimeSeriesLink
-                          key={`${target.target_object}-${i}`}
-                          causeId={d.cause_object as string}
-                          causeName={causeEnt?.name}
-                          effectId={target.target_object}
-                          effectClass={target.target_class}
-                          viaVar={d.cause}
-                          lagSec={d.lag * 0.1}
-                          strength={d.strength}
-                          rows={csvData}
-                          windows={episodeWindows}
-                        />
-                      );
-                    })}
-                </div>
+          {/* Consensus edges table */}
+          {causal.consensus_edges && causal.consensus_edges.length > 0 && (
+            <>
+              <h3 className={styles.subTitle} style={{ marginTop: 18 }}>Statistical Consensus Edges</h3>
+              <table className={styles.driverTable}>
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>→</th>
+                    <th>Target</th>
+                    <th>Relationship</th>
+                    <th>Lag</th>
+                    <th>Support</th>
+                    <th>Confidence</th>
+                    <th>p-value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {causal.consensus_edges.map((e, i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize: '0.72rem' }}>{e.source}</td>
+                      <td>→</td>
+                      <td style={{ fontSize: '0.72rem' }}>{e.target}</td>
+                      <td><RelBadge rel={e.relationship} /></td>
+                      <td>{e.lag_frames}f ({e.lag_seconds}s)</td>
+                      <td>{e.support_count}/{e.available_methods}</td>
+                      <td>{(e.final_confidence * 100).toFixed(0)}%</td>
+                      <td>{e.p_value?.toFixed(3) ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {causal.note && <p className={styles.caveat}>{causal.note}</p>}
+        </div>
+      )}
+
+      {/* ── EVENTS TAB ────────────────────────────────────────────────────── */}
+      {hasFullResult && activeTab === 'events' && (
+        <div className={styles.causalResult}>
+          <h3 className={styles.subTitle}>Temporal Event Timeline</h3>
+          <table className={styles.driverTable}>
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Type</th>
+                <th>Objects</th>
+                <th>Onset</th>
+                <th>Confirmed</th>
+                <th>Conf</th>
+                <th>Seek</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(causal.temporal_events ?? []).map((evt) => (
+                <tr key={evt.event_id}>
+                  <td style={{ fontSize: '0.7rem', opacity: 0.6 }}>{evt.event_id}</td>
+                  <td>
+                    <span style={{ color: EVENT_COLOURS[evt.event_type] || '#64748b', fontWeight: 600, fontSize: '0.8rem' }}>
+                      {evt.event_type.replace(/_/g, ' ')}
+                    </span>
+                  </td>
+                  <td>{evt.object_ids.join(', ')}</td>
+                  <td>{(evt.onset?.onset_timestamp ?? evt.start_timestamp).toFixed(2)}s</td>
+                  <td>{(evt.onset?.confirmation?.confirmation_timestamp ?? evt.end_timestamp).toFixed(2)}s</td>
+                  <td>{(evt.confidence * 100).toFixed(0)}%</td>
+                  <td>
+                    {onSeekFrame && (
+                      <button
+                        style={{ fontSize: '0.72rem', padding: '1px 6px', cursor: 'pointer', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-primary)' }}
+                        onClick={() => onSeekFrame(evt.onset?.onset_frame ?? evt.start_frame)}
+                      >
+                        ⏭
+                      </button>
+                    )}
+                  </td>
+                </tr>
               ))}
-            </div>
+            </tbody>
+          </table>
+
+          {/* Event causal edges */}
+          {causal.temporal_event_edges && causal.temporal_event_edges.length > 0 && (
+            <>
+              <h3 className={styles.subTitle} style={{ marginTop: 18 }}>Event-Level Causal Edges</h3>
+              <table className={styles.driverTable}>
+                <thead>
+                  <tr>
+                    <th>From</th>
+                    <th>→</th>
+                    <th>To</th>
+                    <th>Relationship</th>
+                    <th>Lag</th>
+                    <th>Confidence</th>
+                    <th>Evidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {causal.temporal_event_edges.map((e, i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize: '0.72rem' }}>{e.source_type.replace(/_/g, ' ')}</td>
+                      <td>→</td>
+                      <td style={{ fontSize: '0.72rem' }}>{e.target_type.replace(/_/g, ' ')}</td>
+                      <td><RelBadge rel={e.relationship} /></td>
+                      <td>{e.lag_seconds.toFixed(2)}s</td>
+                      <td>{(e.confidence * 100).toFixed(0)}%</td>
+                      <td style={{ fontSize: '0.7rem', opacity: 0.7 }}>{e.evidence.slice(0, 2).join(', ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
           )}
         </div>
       )}
 
-      {/* ── Situation report (Track 4) ─────────────────────────────────── */}
-      {sitrep && (
+      {/* ── METHODS TAB ───────────────────────────────────────────────────── */}
+      {hasFullResult && activeTab === 'methods' && (
+        <div className={styles.causalResult}>
+          <h3 className={styles.subTitle}>Causal Discovery Methods</h3>
+          <div style={{ marginBottom: 14 }}>
+            {Object.entries(causal.method_results ?? {}).map(([name, res]) => (
+              <MethodPill key={name} name={name} status={res.status} nEdges={res.n_edges} />
+            ))}
+          </div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            <p><strong>Available:</strong> {causal.available_methods?.join(', ') || 'none'}</p>
+            <p><strong>Failed:</strong> {causal.failed_methods?.join(', ') || 'none'}</p>
+            <p><strong>Skipped/Unavailable:</strong> {causal.skipped_methods?.join(', ') || 'none'}</p>
+          </div>
+          <div style={{ marginTop: 14, fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            <p>PCMCI+ provides temporal causal evidence with lag information.</p>
+            <p>LiNGAM provides directional causal evidence under non-Gaussian assumptions.</p>
+            <p>GES provides score-based structural evidence (BIC).</p>
+            <p>CausalForest estimates heterogeneous treatment effects (braking → outcome speed).</p>
+            <p>CycleNet: not available as a pip package.</p>
+            <p style={{ marginTop: 6, fontStyle: 'italic' }}>Results are ranked hypotheses supporting — not proving — physical causality.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── SITREP TAB ────────────────────────────────────────────────────── */}
+      {activeTab === 'sitrep' && (
         <div className={styles.sitrepSection}>
-          <h3 className={styles.subTitle}>Situation Report</h3>
-
-          {sitrep.status === 'no_key' && (
-            <div className={styles.emptyState}>
-              No LLM API key configured (<code>$LLM_API_KEY</code>) — showing the structured evidence
-              packet only; no narrative was generated.
-            </div>
+          {!sitrep && (
+            <div className={styles.emptyState}>No situation report generated yet.</div>
           )}
-          {sitrep.status === 'llm_error' && (
-            <div className={styles.errorBox}>LLM call failed: {sitrep.message}</div>
-          )}
-          {sitrep.report && (
-            <div className={styles.reportText}>
-              {renderReport(sitrep.report)}
-            </div>
-          )}
-
-          {flaggedEntities.length > 0 && (
-            <div className={styles.incidentBox}>
-              <h4 className={styles.subTitle}>Incident Indicators</h4>
-              {flaggedEntities.map((en) => (
-                <div key={en.object_id} className={styles.incidentRow}>
-                  <span className={styles.incidentBadge}>Possible collision</span>
-                  <span>
-                    {en.colour ? `${en.colour} ` : ''}{en.class} <strong>{en.object_id}</strong> decelerated
-                    sharply then its track ended at {en.exit_s}s
-                    {en.nearest_at_exit && (
-                      <> — nearest entity at that instant: {en.nearest_at_exit.class} {en.nearest_at_exit.object_id} ({en.nearest_at_exit.distance_m} m away)</>
-                    )}
-                  </span>
+          {sitrep && (
+            <>
+              {sitrep.status === 'no_key' && (
+                <div className={styles.emptyState}>
+                  No LLM API key configured (<code>$LLM_API_KEY</code>) — showing the structured evidence packet only.
                 </div>
-              ))}
-            </div>
-          )}
-
-          {sitrep.evidence && (
-            <table className={styles.driverTable}>
-              <thead>
-                <tr><th>Object</th><th>Class</th><th>Mean km/h</th><th>Peak km/h</th><th>Present</th></tr>
-              </thead>
-              <tbody>
-                {sitrep.evidence.entities.map((en) => (
-                  <tr key={en.object_id} className={en.possible_collision ? styles.rowFlagged : undefined}>
-                    <td>{en.object_id}</td>
-                    <td>{en.colour ? `${en.colour} ` : ''}{en.class}</td>
-                    <td>{en.speed_mean_kmh}</td>
-                    <td>{en.speed_max_kmh}{en.speed_uncertain ? ' *' : ''}</td>
-                    <td>{en.entry_s}s – {en.exit_s}s</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              )}
+              {sitrep.status === 'llm_error' && (
+                <div className={styles.errorBox}>LLM call failed: {sitrep.message}</div>
+              )}
+              {sitrep.report && (
+                <div className={styles.reportText}>{renderReport(sitrep.report)}</div>
+              )}
+              {flaggedEntities.length > 0 && (
+                <div className={styles.incidentBox} style={{ marginTop: 14 }}>
+                  <h4 className={styles.subTitle}>Incident Indicators</h4>
+                  {flaggedEntities.map((en) => (
+                    <div key={en.object_id} className={styles.incidentRow}>
+                      <span className={styles.incidentBadge}>Possible collision</span>
+                      <span>
+                        {en.colour ? `${en.colour} ` : ''}{en.class} <strong>{en.object_id}</strong> decelerated
+                        sharply then its track ended at {en.exit_s}s
+                        {en.nearest_at_exit && (
+                          <> — nearest entity at that instant: {en.nearest_at_exit.class} {en.nearest_at_exit.object_id} ({en.nearest_at_exit.distance_m} m away)</>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {sitrep.evidence && (
+                <table className={styles.driverTable} style={{ marginTop: 14 }}>
+                  <thead>
+                    <tr><th>Object</th><th>Class</th><th>Mean km/h</th><th>Peak km/h</th><th>Present</th></tr>
+                  </thead>
+                  <tbody>
+                    {sitrep.evidence.entities.map((en) => (
+                      <tr key={en.object_id} className={en.possible_collision ? styles.rowFlagged : undefined}>
+                        <td>{en.object_id}</td>
+                        <td>{en.colour ? `${en.colour} ` : ''}{en.class}</td>
+                        <td>{en.speed_mean_kmh}</td>
+                        <td>{en.speed_max_kmh}{en.speed_uncertain ? ' *' : ''}</td>
+                        <td>{en.entry_s}s – {en.exit_s}s</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
           )}
         </div>
       )}
     </div>
   );
 }
+
+// Local colour helper for event tab (avoid export)
+const EVENT_COLOURS: Record<string, string> = {
+  COLLISION: '#ef4444', CONTACT: '#f97316', NEAR_COLLISION: '#facc15',
+  SUDDEN_BRAKING: '#3b82f6', SUDDEN_STOP: '#6366f1', APPROACHING: '#a3a3a3',
+  CLOSING_DISTANCE: '#f59e0b', FALL: '#ec4899', TRAJECTORY_DEVIATION: '#8b5cf6',
+  DEFAULT: '#64748b',
+};
