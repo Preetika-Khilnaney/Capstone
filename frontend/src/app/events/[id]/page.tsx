@@ -132,7 +132,7 @@ export default function EventDetailView({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
-      {event.Status === 'Extracted' && <CausalPanel eventId={event.Event_ID} />}
+      {event.Status === 'Extracted' && <CausalPanel eventId={event.Event_ID} csvData={csvData} />}
 
       {event.Status === 'Processing' && (
         <div className={styles.processingPane}>

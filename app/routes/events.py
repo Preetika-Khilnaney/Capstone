@@ -5,11 +5,13 @@ Provides routes to trigger pipeline runs, list events, fetch event details,
 and download event artifacts (CSV, video).
 """
 
+import json
 import uuid
 import logging
 from pathlib import Path
+import shutil
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import settings
@@ -74,13 +76,12 @@ def _run_pipeline(video_path: str, event_id: str, src_pts: list[list[int]] | Non
             pass  # Best-effort status update
 
 
-@router.post("/pipeline/run", response_model=PipelineResponse)
-async def run_pipeline(request: PipelineRequest, background_tasks: BackgroundTasks):
-    """
-    Trigger the Track 1 pipeline on a video file.
-    Processing runs in the background; returns immediately with an event_id.
-    """
-    video_path = request.video_path
+_ALLOWED_VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+
+
+def _start_event(video_path: str, camera_id: str | None, src_pts: list[list[int]] | None,
+                 background_tasks: BackgroundTasks) -> PipelineResponse:
+    """Register an event for a video file and launch the background pipeline."""
     if not Path(video_path).exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
 
@@ -113,13 +114,69 @@ async def run_pipeline(request: PipelineRequest, background_tasks: BackgroundTas
     with _get_connection() as conn:
         conn.execute("UPDATE Master_Event_Log SET Video_ID = ? WHERE Event_ID = ?", (video_id, event_id))
 
-    background_tasks.add_task(_run_pipeline, video_path, event_id, request.src_pts)
+    background_tasks.add_task(_run_pipeline, video_path, event_id, src_pts)
 
     return PipelineResponse(
         event_id=event_id,
         status="processing",
         message=f"Pipeline started for {Path(video_path).name}. Poll GET /api/events/{event_id} for status.",
     )
+
+
+@router.post("/pipeline/run", response_model=PipelineResponse)
+async def run_pipeline(request: PipelineRequest, background_tasks: BackgroundTasks):
+    """
+    Trigger the Track 1 pipeline on a video file (server-side path).
+    Processing runs in the background; returns immediately with an event_id.
+    """
+    return _start_event(request.video_path, request.camera_id, request.src_pts, background_tasks)
+
+
+@router.post("/pipeline/upload", response_model=PipelineResponse)
+async def upload_pipeline(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="Video file to upload (.mp4, .avi, .mov, .mkv)"),
+    camera_id: str | None = Form(None, description="Optional camera/source label"),
+    src_pts: str | None = Form(None, description="Optional 4x2 JSON matrix [[x1,y1],...] for homography"),
+):
+    """
+    Upload a video from the browser and trigger the Track 1 pipeline on it.
+    The file is persisted under dataset/uploads/ before processing starts.
+    """
+    filename = Path(file.filename or "upload.mp4").name
+    ext = Path(filename).suffix.lower()
+    if ext not in _ALLOWED_VIDEO_EXTS:
+        raise HTTPException(status_code=415, detail=f"Unsupported video type '{ext}'. Allowed: {sorted(_ALLOWED_VIDEO_EXTS)}")
+
+    # Parse optional homography points (JSON string form field)
+    parsed_pts: list[list[int]] | None = None
+    if src_pts and src_pts.strip():
+        try:
+            parsed_pts = json.loads(src_pts)
+            if not (isinstance(parsed_pts, list) and len(parsed_pts) == 4):
+                raise ValueError("src_pts must be a 4x2 array")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid src_pts JSON: {exc}")
+
+    # Persist upload (dedupe name collisions with a numeric suffix)
+    uploads_dir = settings.paths.uploads_dir
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    dest = uploads_dir / filename
+    counter = 1
+    while dest.exists():
+        dest = uploads_dir / f"{Path(filename).stem}_{counter}{ext}"
+        counter += 1
+
+    try:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {exc}")
+    finally:
+        file.file.close()
+
+    return _start_event(str(dest), camera_id, parsed_pts, background_tasks)
 
 
 @router.get("/events", response_model=EventList)

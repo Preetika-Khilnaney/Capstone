@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   analyzeCausal, fetchCausalGraph, generateSitrep, fetchSitrep,
-  CausalResult, SitrepResult,
+  CausalEpisodeEntity, CausalResult, SitrepResult,
 } from '@/lib/api';
-import CausalGraph from './CausalGraph';
+import CausalEvidenceGraph from './CausalEvidenceGraph';
+import TimeSeriesLink, { TsWindow } from './TimeSeriesLink';
 import styles from './CausalPanel.module.css';
 
 function renderInline(text: string, keyPrefix: string) {
@@ -51,7 +52,38 @@ const STATUS_COPY: Record<string, string> = {
   error: 'Analysis failed.',
 };
 
-export default function CausalPanel({ eventId }: { eventId: string }) {
+const REL_TYPE_CLASS: Record<string, string> = {
+  DIRECT_CAUSE: styles.stageRelDirect,
+  TRIGGERED_RESPONSE: styles.stageRelTriggered,
+  CONSEQUENCE: styles.stageRelConsequence,
+};
+
+/** Entity chips to show inside a stage node: named actors + collapsed counts. */
+function chipsFor(node: { involved_entities?: string[] }, entities?: CausalEpisodeEntity[]): string[] {
+  if (!entities || !node.involved_entities) return [];
+  const ents = node.involved_entities
+    .map((id) => entities.find((e) => e.id === id))
+    .filter((e): e is CausalEpisodeEntity => !!e);
+  const chips: string[] = [];
+  for (const e of ents) {
+    if (e.role === 'trailing' || e.role === 'aggregate') continue;
+    chips.push(e.role && e.role !== 'vehicle' ? `${e.name} (${e.role})` : e.name);
+  }
+  const trailing = ents.filter((e) => e.role === 'trailing').length;
+  if (trailing > 0) chips.push(`${trailing} trailing vehicles`);
+  for (const e of ents) {
+    if (e.role === 'aggregate') chips.push(`${e.name} — ${e.object_ids.length} vehicles`);
+  }
+  return chips;
+}
+
+export default function CausalPanel({
+  eventId,
+  csvData,
+}: {
+  eventId: string;
+  csvData?: Record<string, string>[];
+}) {
   const [causal, setCausal] = useState<CausalResult | null>(null);
   const [sitrep, setSitrep] = useState<SitrepResult | null>(null);
   const [causalLoading, setCausalLoading] = useState(false);
@@ -103,6 +135,25 @@ export default function CausalPanel({ eventId }: { eventId: string }) {
   if (initialLoad) return null;
 
   const flaggedEntities = sitrep?.evidence?.entities.filter((e) => e.possible_collision) || [];
+  const targets = causal?.targets || [];
+  const entities = causal?.episode?.entities;
+
+  const episodeWindows: TsWindow[] = (causal?.episode?.nodes || [])
+    .filter((n) => n.node_id !== 'N1')
+    .map((n) => ({
+      label: `${n.node_id} ${n.state}`,
+      start: n.window_s?.[0] ?? 0,
+      end: n.window_s?.[1] ?? 0,
+    }));
+
+  const entityForOid = (oid: string): CausalEpisodeEntity | undefined =>
+    entities?.find((e) => e.object_ids?.includes(oid));
+
+  const unmappedHint = targets.some((t) =>
+    (t.drivers_of_target_speed || []).some((d) => d.cause !== 'tgt_speed' && !d.cause_object));
+
+  const linkedTargets = targets.filter((t) =>
+    (t.drivers_of_target_speed || []).some((d) => d.cause !== 'tgt_speed' && !!d.cause_object));
 
   return (
     <div className={styles.panel}>
@@ -135,98 +186,111 @@ export default function CausalPanel({ eventId }: { eventId: string }) {
         <div className={styles.causalResult}>
           {causal.episode && causal.episode.nodes.length > 0 && (
             <div className={styles.episodeBlock}>
-              <h3 className={styles.subTitle}>Incident Episode — Stage Chain</h3>
+              <h3 className={styles.subTitle}>Incident Episode — Timeline</h3>
               {causal.episode.root_cause?.primary_factor && (
-                <p className={styles.caveat}>
+                <p className={styles.rootCauseLine}>
                   Root cause (primary): {causal.episode.root_cause.primary_factor.kind} —{' '}
                   {causal.episode.root_cause.primary_factor.text}
                 </p>
               )}
               <div className={styles.stageChain}>
-                {causal.episode.nodes.map((node) => (
-                  <div key={node.node_id} className={styles.stageNode}>
-                    <div className={styles.stageHeader}>
-                      <span className={styles.stageBadge}>{node.node_id}</span>
-                      <span className={styles.stageName}>{node.state}</span>
-                    </div>
-                    <div className={styles.stageWindow}>
-                      {node.window_s?.[0]}s – {node.window_s?.[1]}s
-                    </div>
-                    {node.evidence && node.evidence.length > 0 && (
-                      <ul className={styles.stageEvidence}>
-                        {node.evidence.map((line, j) => (
-                          <li key={`${node.node_id}-ev-${j}`}>{line}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
+                {causal.episode.nodes.map((node, i) => {
+                  const outgoing = causal.episode!.relations.filter((r) => r.source_node === node.node_id);
+                  const chips = chipsFor(node, entities);
+                  return (
+                    <Fragment key={node.node_id}>
+                      <div className={styles.stageNode}>
+                        <div className={styles.stageHeader}>
+                          <span className={styles.stageBadge}>{node.node_id}</span>
+                          <span className={styles.stageName}>{node.state}</span>
+                        </div>
+                        <div className={styles.stageWindow}>
+                          {node.window_s?.[0]}s – {node.window_s?.[1]}s
+                        </div>
+                        {chips.length > 0 && (
+                          <div className={styles.entityChips}>
+                            {chips.map((c) => <span key={c} className={styles.entityChip}>{c}</span>)}
+                          </div>
+                        )}
+                        {node.evidence && node.evidence.length > 0 && (
+                          <p className={styles.stageEvidenceLine}>{node.evidence[0]}</p>
+                        )}
+                      </div>
+                      {i < causal.episode!.nodes.length - 1 && (
+                        <div className={styles.stageConnector}>
+                          {outgoing.length === 0 && <span className={styles.stageConnMech}>relation not staged</span>}
+                          {outgoing.map((rel) => (
+                            <div key={rel.target_node} className={styles.stageConnItem}>
+                              <span className={`${styles.stageConnLabel} ${REL_TYPE_CLASS[rel.relation_type] || ''}`}>
+                                {rel.relation_type} → {rel.target_node}
+                              </span>
+                              {rel.mechanism && (
+                                <span className={styles.stageConnMech}>{rel.mechanism}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </div>
-              {causal.episode.relations.length > 0 && (
-                <div className={styles.stageRelations}>
-                  {causal.episode.relations.map((rel, i) => (
-                    <span key={i} className={styles.stageRel}>
-                      {rel.source_node} → {rel.target_node}: {rel.relation_type}
-                      {rel.mechanism ? <span className={styles.stageRelMech}> — {rel.mechanism}</span> : null}
-                    </span>
-                  ))}
-                </div>
-              )}
+              {causal.note && <p className={styles.caveat}>{causal.note}</p>}
             </div>
           )}
 
-          {(causal.targets?.length || 0) > 1 && (
-            <p className={styles.caveat}>{causal.targets!.length} causal chains found in this scene.</p>
-          )}
-          {(causal.targets || []).map((target) => (
-            <div key={target.target_object} className={styles.targetBlock}>
-              <div className={styles.statRow}>
-                <div className={styles.statCard}>
-                  <span className={styles.statLabel}>Target</span>
-                  <span className={styles.statValue}>{target.target_object} ({target.target_class})</span>
-                </div>
-                <div className={styles.statCard}>
-                  <span className={styles.statLabel}>Speed Drop</span>
-                  <span className={styles.statValue}>{target.target_speed_drop_mps} m/s</span>
-                </div>
-                <div className={styles.statCard}>
-                  <span className={styles.statLabel}>Lead Fraction</span>
-                  <span className={styles.statValue}>{target.target_lead_fraction}</span>
-                </div>
-                <div className={styles.statCard}>
-                  <span className={styles.statLabel}>Timesteps</span>
-                  <span className={styles.statValue}>{target.n_timesteps}</span>
-                </div>
-              </div>
-
-              <CausalGraph result={target} />
-
-              {(target.drivers_of_target_speed || []).length === 0 ? (
+          {targets.length > 0 && (
+            <div className={styles.evidenceBlock}>
+              <h3 className={styles.subTitle}>Causal Evidence Graph</h3>
+              <p className={styles.graphIntro}>
+                Confirmed PCMCI+ links, mapped onto the physical vehicles. The episode initiator is
+                shown at the top even when PCMCI+ did not analyze it directly.
+              </p>
+              <CausalEvidenceGraph targets={targets} entities={entities} />
+              {unmappedHint && (
                 <p className={styles.caveat}>
-                  No causal link found between this vehicle and the others — its speed change is
-                  explained by its own past only (own-past / non-causal result).
+                  Some links lack a vehicle mapping (older analysis data) — press “Re-run Causal
+                  Analysis” to populate the physical-vehicle mapping.
                 </p>
-              ) : (
-                <table className={styles.driverTable}>
-                  <thead>
-                    <tr><th>Cause</th><th>Lag</th><th>Strength</th></tr>
-                  </thead>
-                  <tbody>
-                    {(target.drivers_of_target_speed || [])
-                      .filter((d) => d.cause !== 'tgt_speed')
-                      .map((d, i) => (
-                        <tr key={i}>
-                          <td>{d.cause}</td>
-                          <td>{d.lag}</td>
-                          <td>{d.strength}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
               )}
             </div>
-          ))}
-          {causal.note && <p className={styles.caveat}>{causal.note}</p>}
+          )}
+
+          {linkedTargets.length > 0 && csvData && csvData.length > 0 && (
+            <div className={styles.evidenceBlock}>
+              <h3 className={styles.subTitle}>Evidence Time Series</h3>
+              <p className={styles.graphIntro}>
+                Cause-vehicle speed (solid) and target speed (dashed) around the incident anchor —
+                the lag arrow shows where the effect manifests.
+              </p>
+              {linkedTargets.map((target) => (
+                <div key={target.target_object} className={styles.tsGroup}>
+                  <h4 className={styles.tsGroupTitle}>
+                    {target.target_object} ({target.target_class}) · speed drop {target.target_speed_drop_mps} m/s
+                  </h4>
+                  {(target.drivers_of_target_speed || [])
+                    .filter((d) => d.cause !== 'tgt_speed' && !!d.cause_object)
+                    .map((d, i) => {
+                      const causeEnt = entityForOid(d.cause_object as string);
+                      return (
+                        <TimeSeriesLink
+                          key={`${target.target_object}-${i}`}
+                          causeId={d.cause_object as string}
+                          causeName={causeEnt?.name}
+                          effectId={target.target_object}
+                          effectClass={target.target_class}
+                          viaVar={d.cause}
+                          lagSec={d.lag * 0.1}
+                          strength={d.strength}
+                          rows={csvData}
+                          windows={episodeWindows}
+                        />
+                      );
+                    })}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

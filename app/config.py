@@ -200,6 +200,7 @@ class PathConfig:
     """All filesystem paths."""
     base_dir: Path = BASE_DIR
     dataset_dir: Path = field(default_factory=lambda: BASE_DIR / "dataset")
+    uploads_dir: Path = field(default_factory=lambda: BASE_DIR / "dataset" / "uploads")
     config_dir: Path = field(default_factory=lambda: BASE_DIR / "config")
     log_dir: Path = field(default_factory=lambda: BASE_DIR / "logs")
     db_path: Path = field(default_factory=lambda: BASE_DIR / "event_registry.db")

@@ -47,6 +47,7 @@ def _setup_logging() -> None:
 def _ensure_directories() -> None:
     """Create required directories if they don't exist."""
     settings.paths.dataset_dir.mkdir(parents=True, exist_ok=True)
+    settings.paths.uploads_dir.mkdir(parents=True, exist_ok=True)
     settings.paths.config_dir.mkdir(parents=True, exist_ok=True)
     settings.paths.log_dir.mkdir(parents=True, exist_ok=True)
 

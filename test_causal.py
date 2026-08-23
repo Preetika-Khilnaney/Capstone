@@ -84,6 +84,10 @@ def main() -> int:
     lead_link = [l for l in drivers if l["cause"] in ("rel_speed", "lead_gap")]
     tau_max = follow.get("tau_max", 15)
     link_ok = bool(lead_link) and all(l["lag"] <= tau_max for l in lead_link)
+    # The variable link must resolve back onto the physical lead vehicle.
+    cause_ok = bool(lead_link) and all(l.get("cause_object") == "V_LEAD"
+                                       and l.get("cause_object_frac", 0) >= 0.95
+                                       for l in lead_link)
 
     lead = targets.get("V_LEAD", {})
     lead_exogenous_ok = not ({"rel_speed", "lead_gap"} & set(lead.get("variables", [])))
@@ -91,9 +95,10 @@ def main() -> int:
     lead_link_desc = [f"{l['cause']}(lag {l['lag']})" for l in lead_link]
     print(f"\nmulti-target selection (V_FOLLOW + V_LEAD both found) : {multi_target_ok}")
     print(f"lead->follow link recovered                          : {link_ok}  {lead_link_desc}")
+    print(f"link resolves to physical vehicle (V_LEAD)           : {cause_ok}")
     print(f"V_LEAD correctly has no lead variable (exogenous root)  : {lead_exogenous_ok}")
 
-    passed = ok and multi_target_ok and link_ok and lead_exogenous_ok
+    passed = ok and multi_target_ok and link_ok and cause_ok and lead_exogenous_ok
     print("\nRESULT:", "PASS" if passed else "FAIL")
     return 0 if passed else 1
 

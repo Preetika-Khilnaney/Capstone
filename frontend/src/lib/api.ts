@@ -148,6 +148,30 @@ export async function triggerPipeline(videoPath: string, cameraId?: string, srcP
 }
 
 /**
+ * Upload a video file from the browser and trigger the pipeline on it
+ */
+export async function uploadPipeline(file: File, cameraId?: string, srcPts?: number[][]): Promise<{ event_id: string | null; status: string; message: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (cameraId) formData.append('camera_id', cameraId);
+  if (srcPts) formData.append('src_pts', JSON.stringify(srcPts));
+
+  const res = await fetch(`${API_BASE}/api/pipeline/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = body.detail;
+    } catch { /* use statusText fallback */ }
+    throw new Error(`Failed to upload pipeline: ${detail}`);
+  }
+  return res.json();
+}
+
+/**
  * Index an event's crops into LanceDB RAG pipeline
  */
 export async function ragIngest(eventId: string): Promise<{ status: string; event_id: string; ingested_count: number }> {
@@ -192,6 +216,8 @@ export interface CausalDriver {
   cause: string;
   lag: number;
   strength: number;
+  cause_object?: string | null;
+  cause_object_frac?: number | null;
 }
 
 export interface CausalTarget {
@@ -221,14 +247,25 @@ export interface CausalEpisodeRelation {
   mechanism?: string;
 }
 
+export interface CausalEpisodeEntity {
+  id: string;
+  name: string;
+  kind: string;
+  role: string;
+  object_ids: string[];
+  class?: string | null;
+  colour?: string | null;
+}
+
 export interface CausalEpisode {
-  entities?: Record<string, unknown>[];
+  entities?: CausalEpisodeEntity[];
   nodes: CausalEpisodeNode[];
   relations: CausalEpisodeRelation[];
   root_cause?: {
     primary_factor?: { kind?: string; text?: string };
     contributing_factors?: string[];
     mitigating_factors?: string[];
+    summary?: string;
   };
 }
 

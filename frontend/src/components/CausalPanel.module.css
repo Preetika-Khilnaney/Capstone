@@ -73,37 +73,6 @@
   margin-bottom: 16px;
 }
 
-.statRow {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.statCard {
-  background-color: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-color);
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 110px;
-}
-
-.statLabel {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  font-weight: 600;
-}
-
-.statValue {
-  font-size: 0.95rem;
-  color: var(--color-active);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
 .driverTable {
   width: 100%;
   border-collapse: collapse;
@@ -136,18 +105,6 @@
   font-size: 0.78rem;
   margin-top: 12px;
   font-style: italic;
-}
-
-.targetBlock {
-  padding-top: 16px;
-  margin-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.targetBlock:first-child {
-  padding-top: 0;
-  margin-top: 0;
-  border-top: none;
 }
 
 .reportText {
@@ -197,7 +154,7 @@
   white-space: nowrap;
 }
 
-/* ── Causal graph SVG ─────────────────────────────────────────────── */
+/* ── Causal evidence graph SVG ─────────────────────────────────────── */
 
 .graphWrap {
   background-color: rgba(0, 0, 0, 0.15);
@@ -218,17 +175,30 @@
   stroke-width: 2.5;
 }
 
-.nodeActive {
-  fill: rgba(239, 68, 68, 0.1);
+.nodeInitiator {
+  fill: rgba(239, 68, 68, 0.12);
   stroke: var(--color-danger);
-  stroke-width: 2;
+  stroke-width: 2.5;
 }
 
-.nodeInactive {
-  fill: rgba(255, 255, 255, 0.03);
+.nodeVehicle {
+  fill: rgba(255, 255, 255, 0.04);
   stroke: var(--border-focus);
   stroke-width: 1.5;
+}
+
+.nodeUnidentified {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
   stroke-dasharray: 4 3;
+}
+
+.tagInitiator {
+  fill: var(--color-danger);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
 }
 
 .nodeLabel {
@@ -243,7 +213,7 @@
   font-weight: 700;
 }
 
-.nodeSubLabelTarget {
+.nodeSubLabel {
   fill: var(--text-muted);
   font-size: 9px;
 }
@@ -255,10 +225,10 @@
 
 .graphLegend {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   flex-wrap: wrap;
   margin-top: 10px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 
@@ -268,7 +238,7 @@
   gap: 6px;
 }
 
-.dotDanger, .dotActive, .dotMuted {
+.dotDanger, .dotActive, .dotMuted, .dotBlue, .dotNeutral {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -278,8 +248,39 @@
 .dotDanger { background-color: var(--color-danger); }
 .dotActive { background-color: var(--color-active); }
 .dotMuted { background-color: var(--border-focus); }
+.dotBlue { background-color: var(--color-active); }
+.dotNeutral { border: 1px solid var(--border-focus); background: transparent; }
 
-/* ── Episode stage chain ─────────────────────────────────────────── */
+.badgeList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.badgeCard {
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.badgeTitle {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.badgeMeta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ── Episode stage timeline ────────────────────────────────────────── */
 
 .episodeBlock {
   background-color: rgba(59, 130, 246, 0.04);
@@ -289,15 +290,22 @@
   margin-bottom: 16px;
 }
 
+.rootCauseLine {
+  color: var(--text-main);
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
 .stageChain {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  align-items: stretch;
   margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
 }
 
 .stageNode {
-  flex: 1 1 160px;
+  flex: 0 0 200px;
   background-color: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -332,32 +340,210 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
-.stageEvidence {
-  margin: 8px 0 0 16px;
-  padding: 0;
-  font-size: 0.78rem;
+.entityChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.entityChip {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background-color: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.stageEvidenceLine {
+  margin: 8px 0 0;
+  font-size: 0.76rem;
   color: var(--text-muted);
+  line-height: 1.4;
 }
 
-.stageEvidence li {
-  margin-bottom: 3px;
-}
-
-.stageRelations {
+.stageConnector {
+  flex: 0 0 190px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 14px;
-  font-size: 0.82rem;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 10px;
+  border-top: 2px solid var(--border-focus);
+  position: relative;
+}
+
+.stageConnector::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: 0;
+  border-top: 6px solid var(--text-muted);
+  border-left: 6px solid transparent;
+}
+
+.stageConnItem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stageConnLabel {
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.stageRelDirect { color: var(--color-danger); }
+.stageRelTriggered { color: var(--color-active); }
+.stageRelConsequence { color: var(--color-warning); }
+
+.stageConnMech {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+/* ── Evidence sections ─────────────────────────────────────────────── */
+
+.evidenceBlock {
+  background-color: rgba(16, 185, 129, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.graphIntro {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin: 0 0 12px;
+}
+
+.tsGroup {
+  margin-bottom: 18px;
+}
+
+.tsGroupTitle {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-accent);
+  margin: 0 0 10px;
+}
+
+/* ── Time-series link charts ───────────────────────────────────────── */
+
+.tsWrap {
+  background-color: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.tsHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.tsTitle {
+  font-size: 0.88rem;
+  font-weight: 700;
   color: var(--text-main);
 }
 
-.stageRel {
-  color: var(--text-accent);
-  font-weight: 600;
+.tsSub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
-.stageRelMech {
+.tsSvg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.tsWin {
+  fill: rgba(255, 255, 255, 0.045);
+}
+
+.tsWinLabel {
+  fill: var(--text-muted);
+  font-size: 8px;
+}
+
+.tsZero {
+  stroke: var(--color-danger);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.tsZeroLabel {
+  fill: var(--color-danger);
+  font-size: 9px;
+}
+
+.tsGrid {
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 1;
+}
+
+.tsAxis {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+
+.tsCauseLine {
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tsEffectLine {
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tsArrowLabel {
+  fill: var(--color-warning);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tsLegend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.72rem;
   color: var(--text-muted);
-  font-weight: 400;
+}
+
+.tsLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tsSwatchSolid {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.tsSwatchDashed {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+  border-top: 2px dashed;
+}
+
+.tsMuted {
+  font-style: italic;
 }

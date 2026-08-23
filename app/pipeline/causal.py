@@ -136,7 +136,7 @@ def _forward_dir(s: pd.DataFrame) -> np.ndarray:
     return d / n if n > 1e-6 else np.array([0.0, 1.0])
 
 
-def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> dict:
+def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: float, frame_lookup: dict) -> tuple[dict, list, list]:
     """
     Build target-centric time series over `frames`:
       tgt_speed  — target's speed (the effect)
@@ -145,6 +145,10 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
                    causation is driven by relative speed, not raw speeds)
       nn_gap     — distance to nearest vehicle (any direction)
       nn_speed   — that nearest vehicle's speed
+
+    Also returns per-frame vehicle IDs behind the lead and nearest slots so a
+    PCMCI+ variable link can be mapped back onto a physical vehicle.
+    Returns (variable_dict, lead_oids, nn_oids).
     """
     tgt = series[target_oid].reindex(frames)
     u = _forward_dir(series[target_oid])
@@ -154,13 +158,15 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
     n = len(frames)
     lead_gap = np.full(n, np.nan); lead_speed = np.full(n, np.nan)
     nn_gap = np.full(n, np.nan);   nn_speed = np.full(n, np.nan)
+    lead_oids: list[str | None] = [None] * n
+    nn_oids: list[str | None] = [None] * n
 
     for k, f in enumerate(frames):
         tp = tgt_pos[k]
         if not np.isfinite(tp).all():
             continue
-        best_lead = (np.inf, np.nan)
-        best_nn = (np.inf, np.nan)
+        best_lead = (np.inf, np.nan, None)
+        best_nn = (np.inf, np.nan, None)
         
         objects_in_frame = frame_lookup.get(f, [])
         for oid, op_x, op_y, osp in objects_in_frame:
@@ -175,21 +181,38 @@ def _build_variables(target_oid: str, series: dict, frames: list, lane_tol: floa
             r = op - tp
             dist = float(np.linalg.norm(r))
             if dist < best_nn[0]:
-                best_nn = (dist, osp)
+                best_nn = (dist, osp, oid)
             fwd = float(r @ u)                          # forward component (ahead > 0)
             lat = abs(float(r[0] * u[1] - r[1] * u[0]))  # lateral offset
             if fwd > 0 and lat < lane_tol and fwd < best_lead[0]:
-                best_lead = (fwd, osp)
+                best_lead = (fwd, osp, oid)
                 
         if np.isfinite(best_lead[0]):
-            lead_gap[k], lead_speed[k] = best_lead
+            lead_gap[k], lead_speed[k], lead_oids[k] = best_lead
         if np.isfinite(best_nn[0]):
-            nn_gap[k], nn_speed[k] = best_nn
+            nn_gap[k], nn_speed[k], nn_oids[k] = best_nn
 
     rel_speed = lead_speed - tgt_speed  # replace, not add: avoids multicollinearity in ParCorr
 
-    return {"tgt_speed": tgt_speed, "lead_gap": lead_gap, "rel_speed": rel_speed,
-            "nn_gap": nn_gap, "nn_speed": nn_speed}
+    return ({"tgt_speed": tgt_speed, "lead_gap": lead_gap, "rel_speed": rel_speed,
+             "nn_gap": nn_gap, "nn_speed": nn_speed}, lead_oids, nn_oids)
+
+
+def _dominant_vehicle(oid_arr: list, numeric_arr: np.ndarray, keep: np.ndarray,
+                      var_label: str) -> tuple[str | None, float | None]:
+    """Most frequent vehicle occupying a variable slot across the kept frames."""
+    counts: dict[str, int] = {}
+    total = 0
+    for oid, val, kept in zip(oid_arr, numeric_arr, keep):
+        if oid is None or not np.isfinite(val) or not kept:
+            continue
+        counts[oid] = counts.get(oid, 0) + 1
+        total += 1
+    if not counts:
+        logger.info("No physical vehicle identified behind variable %s", var_label)
+        return None, None
+    top_oid, top_n = max(counts.items(), key=lambda kv: kv[1])
+    return top_oid, round(top_n / total, 2)
 
 
 def _assemble(cols: dict, min_presence_frac: float) -> tuple[np.ndarray, list[str], np.ndarray]:
@@ -256,7 +279,8 @@ class CausalEngine:
 
         targets = []
         for target_oid, drop, lead_frac in candidates:
-            cols = _build_variables(target_oid, series, frames, cfg.lane_tolerance_m, frame_lookup)
+            cols, lead_oids, nn_oids = _build_variables(target_oid, series, frames,
+                                                        cfg.lane_tolerance_m, frame_lookup)
             data, names, obs_mask = _assemble(cols, cfg.min_variable_presence_frac)
             if data.shape[0] < cfg.min_series_len or len(names) < 2:
                 logger.info("Skipping target %s for %s: only %d timesteps / %d variables",
@@ -277,12 +301,29 @@ class CausalEngine:
                          if graph[i, tj, tau] == "-->"]
             logger.info("Target %s: PCMCI+ found %d candidate links (pre self-link filter)",
                         target_oid, len(pre_links))
+            keep = np.isfinite(cols["tgt_speed"])
             links = []
             for i, tau in pre_links:
                 if i == tj:
                     continue  # Fix 1: all self-links dropped (autoregression is trivially true)
-                links.append({"cause": names[i], "lag": int(tau),
-                              "strength": round(float(val[i, tj, tau]), 3)})
+                var = names[i]
+                # Map the abstract variable back onto the physical vehicle it was
+                # measured against: lead slot (lead_gap/rel_speed) or nearest slot
+                # (nn_gap/nn_speed). `cause_object` is the dominant occupant.
+                if var in ("lead_gap", "rel_speed"):
+                    cause_oid, cause_frac = _dominant_vehicle(lead_oids, cols["lead_gap"],
+                                                              keep, var)
+                elif var in ("nn_gap", "nn_speed"):
+                    cause_oid, cause_frac = _dominant_vehicle(nn_oids, cols["nn_gap"],
+                                                              keep, var)
+                else:
+                    cause_oid, cause_frac = None, None
+                link = {"cause": var, "lag": int(tau),
+                        "strength": round(float(val[i, tj, tau]), 3)}
+                if cause_oid is not None:
+                    link["cause_object"] = cause_oid
+                    link["cause_object_frac"] = cause_frac
+                links.append(link)
             links.sort(key=lambda l: -abs(l["strength"]))
 
             cls = series[target_oid]["Class"].dropna()
