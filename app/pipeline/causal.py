@@ -115,8 +115,9 @@ def _build_causal_variables(
 
     all_frames_sorted = sorted(all_frames)
     base = pd.DataFrame({"frame_id": all_frames_sorted})
+    new_cols = {}
 
-    # Entity columns — only include entities with >= 20 valid speed frames
+    # Entity columns — only include entities with >= 10 valid speed frames
     for oid, sdf in entity_series.items():
         speed_valid = sdf["speed"].notna().sum()
         if speed_valid < 10:
@@ -125,7 +126,7 @@ def _build_causal_variables(
         safe_oid = str(oid).replace("-", "_").replace(" ", "_")
         for col in ["speed", "acceleration", "vx", "vy", "heading", "ax", "ay"]:
             if col in sdf_idx.columns:
-                base[f"{safe_oid}_{col}"] = base["frame_id"].map(
+                new_cols[f"{safe_oid}_{col}"] = base["frame_id"].map(
                     sdf_idx[col].to_dict()
                 ).astype(float)
 
@@ -137,9 +138,12 @@ def _build_causal_variables(
         label = f"{id_a}_{id_b}".replace("-", "_").replace(" ", "_")
         for col in ["distance", "closing_speed", "relative_speed", "relative_acceleration", "heading_difference"]:
             if col in pf_idx.columns:
-                base[f"{label}_{col}"] = base["frame_id"].map(
+                new_cols[f"{label}_{col}"] = base["frame_id"].map(
                     pf_idx[col].to_dict()
                 ).astype(float)
+
+    if new_cols:
+        base = pd.concat([base, pd.DataFrame(new_cols)], axis=1)
 
     return base.sort_values("frame_id").reset_index(drop=True)
 

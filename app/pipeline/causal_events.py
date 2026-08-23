@@ -232,7 +232,10 @@ def extract_entity_events(
             for i in range(5, n):
                 if not np.isfinite(speed[i]):
                     continue
-                window_max = np.nanmax(speed[max(0, i - 10):i])
+                window = speed[max(0, i - 10):i]
+                if not np.any(np.isfinite(window)):
+                    continue
+                window_max = float(np.nanmax(window))
                 if window_max > 0.5 and speed[i] < window_max * (1 - FALL_SPEED_DROP_FRAC):
                     events.append(TemporalEvent(
                         event_id=_new_id(),
