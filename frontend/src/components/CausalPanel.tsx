@@ -77,6 +77,118 @@ function RelBadge({ rel }: { rel: string }) {
   );
 }
 
+// ── Explanation parser ─────────────────────────────────────────────────────────
+interface ExplanationEntry {
+  type: string;
+  timestamp: number;
+  confidence: number;
+  vehicles: string[];
+  detail: string;
+}
+
+function parseExplanation(text: string): ExplanationEntry[] {
+  const entries: ExplanationEntry[] = [];
+  // Match patterns like: "... <EVENT_TYPE> ... at t=9.9s (confidence=0.60)" or "... at approximately t=-9.1s ..."
+  const pattern = /(?:(?:was|were|underwent|experienced|detected|involved|was involved)\s+)?(?:the preceding\s+|a\s+)?([\w\s]+?)\s+at\s+(?:t[=~-]?|approximately\s+t[=~-]?)(-?[\d.]+)s\s*\(confidence[=:]?\s*([\d.]+)\)/gi;
+  const fallbackPattern = /(collision|near collision|contact|sudden braking|sudden stop|approaching|closing distance|fall|trajectory deviation|swerve|speed reduction).*?at\s+(?:t[=~-]?)(-?[\d.]+)s/gi;
+  const vehiclePattern = /([Vv]_\d+(?:x\d+)?)/g;
+
+  let match: RegExpExecArray | null;
+  const seen = new Set<string>();
+
+  // Primary pattern with confidence
+  while ((match = pattern.exec(text)) !== null) {
+    const eventType = match[1].trim().toUpperCase().replace(/\s+/g, '_');
+    const ts = parseFloat(match[2]);
+    const conf = parseFloat(match[3]);
+    const key = `${eventType}_${ts}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Extract sentence context around this match
+    const start = Math.max(0, match.index - 80);
+    const end = Math.min(text.length, match.index + match[0].length + 80);
+    const context = text.slice(start, end).trim();
+    const vehicles = [...new Set([...context.matchAll(vehiclePattern)].map(m => m[0]))];
+
+    entries.push({ type: eventType, timestamp: ts, confidence: conf, vehicles, detail: match[0].trim() });
+  }
+
+  // Fallback: simpler pattern
+  if (entries.length === 0) {
+    while ((match = fallbackPattern.exec(text)) !== null) {
+      const eventType = match[1].trim().toUpperCase().replace(/\s+/g, '_');
+      const ts = parseFloat(match[2]);
+      const key = `${eventType}_${ts}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const start = Math.max(0, match.index - 60);
+      const end = Math.min(text.length, match.index + match[0].length + 60);
+      const context = text.slice(start, end).trim();
+      const vehicles = [...new Set([...context.matchAll(vehiclePattern)].map(m => m[0]))];
+
+      entries.push({ type: eventType, timestamp: ts, confidence: 0, vehicles, detail: match[0].trim() });
+    }
+  }
+
+  // Sort chronologically (most negative first = earliest)
+  entries.sort((a, b) => a.timestamp - b.timestamp);
+  return entries;
+}
+
+const EXPL_COLOURS: Record<string, string> = {
+  COLLISION: '#ef4444',
+  CONTACT: '#f97316',
+  NEAR_COLLISION: '#facc15',
+  SUDDEN_BRAKING: '#3b82f6',
+  SUDDEN_STOP: '#6366f1',
+  SUDDEN_ACCELERATION: '#22c55e',
+  CLOSING_DISTANCE: '#f59e0b',
+  APPROACHING: '#a3a3a3',
+  FALL: '#ec4899',
+  TRAJECTORY_DEVIATION: '#8b5cf6',
+  SWERVE: '#0ea5e9',
+  SPEED_REDUCTION: '#f97316',
+  DEFAULT: '#64748b',
+};
+
+function TimelineCard({ entry }: { entry: ExplanationEntry }) {
+  const colour = EXPL_COLOURS[entry.type] || EXPL_COLOURS.DEFAULT;
+  const label = entry.type.replace(/_/g, ' ');
+  return (
+    <div className={styles.timelineCard} style={{ borderLeftColor: colour }}>
+      <div className={styles.timelineHeader}>
+        <span className={styles.timelineBadge} style={{ background: colour }}>{label}</span>
+        <span className={styles.timelineTime}>t = {entry.timestamp.toFixed(1)}s</span>
+        {entry.confidence > 0 && (
+          <span className={styles.timelineConf}>conf {Math.round(entry.confidence * 100)}%</span>
+        )}
+      </div>
+      {entry.vehicles.length > 0 && (
+        <div className={styles.timelineChips}>
+          {entry.vehicles.map((v) => (
+            <span key={v} className={styles.timelineChip}>{v}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Variable chip for table cells ─────────────────────────────────────────────
+function VarCell({ value }: { value: string }) {
+  // Parse "V_39_speed" → vehicle chip + variable suffix
+  const m = value.match(/^(V_\d+(?:x\d+)?)(?:_(.+))?$/);
+  if (!m) return <span style={{ fontSize: '0.72rem' }}>{value}</span>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <span className={styles.varChip}>{m[1]}</span>
+      {m[2] && <span className={styles.varSuffix}>{m[2]}</span>}
+    </span>
+  );
+}
+
 // ── Method status pill ────────────────────────────────────────────────────────
 function MethodPill({ name, status, nEdges }: { name: string; status: string; nEdges: number }) {
   const isOk = status === 'ok';
@@ -201,12 +313,25 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
         </div>
       )}
 
-      {/* ── Explanation ───────────────────────────────────────────────────── */}
-      {causal?.explanation && (
-        <div className={styles.reportText} style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-card)', borderRadius: 8, borderLeft: '3px solid var(--color-active)' }}>
-          <p style={{ margin: 0, lineHeight: 1.6, fontSize: '0.88rem' }}>{causal.explanation}</p>
-        </div>
-      )}
+      {/* ── Explanation as timeline cards ────────────────────────────────── */}
+      {causal?.explanation && (() => {
+        const entries = parseExplanation(causal.explanation);
+        if (entries.length === 0) {
+          // Fallback: render as plain text if parsing yields nothing
+          return (
+            <div className={styles.reportText} style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-card)', borderRadius: 8, borderLeft: '3px solid var(--color-active)' }}>
+              <p style={{ margin: 0, lineHeight: 1.6, fontSize: '0.88rem' }}>{causal.explanation}</p>
+            </div>
+          );
+        }
+        return (
+          <div className={styles.timelineWrap} style={{ marginBottom: 16 }}>
+            {entries.map((entry, i) => (
+              <TimelineCard key={`${entry.type}-${entry.timestamp}-${i}`} entry={entry} />
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Tab bar ───────────────────────────────────────────────────────── */}
       {hasFullResult && (
@@ -288,34 +413,36 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
           {causal.consensus_edges && causal.consensus_edges.length > 0 && (
             <>
               <h3 className={styles.subTitle} style={{ marginTop: 18 }}>Statistical Consensus Edges</h3>
-              <table className={styles.driverTable}>
-                <thead>
-                  <tr>
-                    <th>Source</th>
-                    <th>→</th>
-                    <th>Target</th>
-                    <th>Relationship</th>
-                    <th>Lag</th>
-                    <th>Support</th>
-                    <th>Confidence</th>
-                    <th>p-value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {causal.consensus_edges.map((e, i) => (
-                    <tr key={i}>
-                      <td style={{ fontSize: '0.72rem' }}>{e.source}</td>
-                      <td>→</td>
-                      <td style={{ fontSize: '0.72rem' }}>{e.target}</td>
-                      <td><RelBadge rel={e.relationship} /></td>
-                      <td>{e.lag_frames}f ({e.lag_seconds}s)</td>
-                      <td>{e.support_count}/{e.available_methods}</td>
-                      <td>{formatConf(e.final_confidence)}</td>
-                      <td>{e.p_value?.toFixed(3) ?? '—'}</td>
+              <div className={styles.tableWrap}>
+                <table className={styles.driverTable}>
+                  <thead>
+                    <tr>
+                      <th>Source</th>
+                      <th></th>
+                      <th>Target</th>
+                      <th>Relationship</th>
+                      <th>Lag</th>
+                      <th>Support</th>
+                      <th>Confidence</th>
+                      <th>p-value</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {causal.consensus_edges.map((e, i) => (
+                      <tr key={i}>
+                        <td><VarCell value={e.source} /></td>
+                        <td style={{ color: 'var(--text-muted)' }}>→</td>
+                        <td><VarCell value={e.target} /></td>
+                        <td><RelBadge rel={e.relationship} /></td>
+                        <td>{e.lag_frames}f ({e.lag_seconds}s)</td>
+                        <td>{e.support_count}/{e.available_methods}</td>
+                        <td>{formatConf(e.final_confidence)}</td>
+                        <td>{e.p_value?.toFixed(3) ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
 
@@ -371,32 +498,34 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
           {causal.temporal_event_edges && causal.temporal_event_edges.length > 0 && (
             <>
               <h3 className={styles.subTitle} style={{ marginTop: 18 }}>Event-Level Causal Edges</h3>
-              <table className={styles.driverTable}>
-                <thead>
-                  <tr>
-                    <th>From</th>
-                    <th>→</th>
-                    <th>To</th>
-                    <th>Relationship</th>
-                    <th>Lag</th>
-                    <th>Confidence</th>
-                    <th>Evidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {causal.temporal_event_edges.map((e, i) => (
-                    <tr key={i}>
-                      <td style={{ fontSize: '0.72rem' }}>{e.source_type.replace(/_/g, ' ')}</td>
-                      <td>→</td>
-                      <td style={{ fontSize: '0.72rem' }}>{e.target_type.replace(/_/g, ' ')}</td>
-                      <td><RelBadge rel={e.relationship} /></td>
-                      <td>{formatNum(e.lag_seconds, 2, 's')}</td>
-                      <td>{formatConf(e.confidence)}</td>
-                      <td style={{ fontSize: '0.7rem', opacity: 0.7 }}>{e.evidence.slice(0, 2).join(', ')}</td>
+              <div className={styles.tableWrap}>
+                <table className={styles.driverTable}>
+                  <thead>
+                    <tr>
+                      <th>From</th>
+                      <th></th>
+                      <th>To</th>
+                      <th>Relationship</th>
+                      <th>Lag</th>
+                      <th>Confidence</th>
+                      <th>Evidence</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {causal.temporal_event_edges.map((e, i) => (
+                      <tr key={i}>
+                        <td style={{ fontSize: '0.78rem', fontWeight: 600 }}>{e.source_type.replace(/_/g, ' ')}</td>
+                        <td style={{ color: 'var(--text-muted)' }}>→</td>
+                        <td style={{ fontSize: '0.78rem', fontWeight: 600 }}>{e.target_type.replace(/_/g, ' ')}</td>
+                        <td><RelBadge rel={e.relationship} /></td>
+                        <td>{formatNum(e.lag_seconds, 2, 's')}</td>
+                        <td>{formatConf(e.confidence)}</td>
+                        <td style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{e.evidence.slice(0, 2).join(', ')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
         </div>

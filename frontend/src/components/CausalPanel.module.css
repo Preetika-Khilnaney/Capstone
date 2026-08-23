@@ -107,6 +107,216 @@
   font-style: italic;
 }
 
+/* ── Stat row (horizontal grid) ────────────────────────────────────── */
+
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.statCard {
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statLabel {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.statValue {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-accent);
+}
+
+/* ── Explanation timeline cards ─────────────────────────────────────── */
+
+.timelineWrap {
+  position: relative;
+  margin-bottom: 16px;
+  padding-left: 22px;
+}
+
+.timelineWrap::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--border-color);
+  border-radius: 1px;
+}
+
+.timelineCard {
+  position: relative;
+  background-color: var(--bg-card, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--text-muted);
+  transition: background-color 0.15s;
+}
+
+.timelineCard:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.timelineCard::before {
+  content: '';
+  position: absolute;
+  left: -20px;
+  top: 14px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border-color);
+  border: 2px solid var(--bg-panel);
+}
+
+.timelineHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.timelineBadge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.timelineTime {
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-muted);
+}
+
+.timelineConf {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.timelineDetail {
+  font-size: 0.82rem;
+  color: var(--text-main);
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.timelineChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.timelineChip {
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background-color: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* ── Graph toolbar (zoom controls) ─────────────────────────────────── */
+
+.graphToolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 6px 12px;
+  background-color: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.graphToolbarLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.graphZoomSlider {
+  flex: 1;
+  max-width: 180px;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--border-color);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.graphZoomSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-active);
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+.graphZoomSlider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-active);
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+.graphZoomValue {
+  font-size: 0.72rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: center;
+}
+
+.graphResetBtn {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.graphResetBtn:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
+}
+
 .reportText {
   color: var(--text-main);
   font-size: 0.9rem;
@@ -546,4 +756,64 @@
 
 .tsMuted {
   font-style: italic;
+}
+
+/* ── Table improvements ────────────────────────────────────────────── */
+
+.tableWrap {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.driverTable tbody tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.driverTable tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.driverTable td {
+  white-space: nowrap;
+}
+
+.varChip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background-color: rgba(59, 130, 246, 0.10);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.varSuffix {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .statRow {
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 6px;
+  }
+
+  .graphToolbar {
+    flex-wrap: wrap;
+  }
+
+  .graphZoomSlider {
+    max-width: 100%;
+    order: 3;
+  }
+
+  .panelHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
