@@ -386,6 +386,7 @@ def run_causal_forest(
         model = CausalForestDML(
             model_y=GradientBoostingRegressor(n_estimators=100, max_depth=3, random_state=42),
             model_t=LogisticRegression(max_iter=500, random_state=42),
+            discrete_treatment=True,
             n_estimators=200,
             random_state=42,
         )

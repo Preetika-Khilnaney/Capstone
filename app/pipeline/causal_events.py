@@ -483,29 +483,30 @@ def build_event_causal_chain(
             if pair_bonus > 0:
                 evidence.append(f"event_type_pattern:{evt_a.event_type}→{evt_b.event_type}")
 
-            # 3. Granger check on shared entities' speed
+            # 3. Granger check on shared entities' speed (only if prior confidence indicates plausible linkage)
             granger_found = False
-            for oid_a in evt_a.object_ids:
-                for oid_b in evt_b.object_ids:
-                    if oid_a == oid_b or oid_a not in entity_series or oid_b not in entity_series:
-                        continue
-                    sa = entity_series[oid_a]
-                    sb = entity_series[oid_b]
-                    # Restrict to window around the events
-                    t_start = max(evt_a.start_timestamp - 1.0, sa["timestamp"].min())
-                    t_end = min(evt_b.end_timestamp + 1.0, sb["timestamp"].max())
-                    wa = sa[(sa["timestamp"] >= t_start) & (sa["timestamp"] <= t_end)]["speed"].to_numpy(dtype=float)
-                    wb = sb[(sb["timestamp"] >= t_start) & (sb["timestamp"] <= t_end)]["speed"].to_numpy(dtype=float)
-                    min_len = min(len(wa), len(wb))
-                    if min_len >= 20:
-                        is_c, improvement = _granger_check(wa[:min_len], wb[:min_len], np.arange(min_len) / fps)
-                        if is_c:
-                            conf += 0.15
-                            evidence.append(f"granger:{oid_a}→{oid_b} (improvement={improvement:.3f})")
-                            granger_found = True
-                            break
-                if granger_found:
-                    break
+            if conf >= 0.45:
+                for oid_a in evt_a.object_ids:
+                    for oid_b in evt_b.object_ids:
+                        if oid_a == oid_b or oid_a not in entity_series or oid_b not in entity_series:
+                            continue
+                        sa = entity_series[oid_a]
+                        sb = entity_series[oid_b]
+                        # Restrict to window around the events
+                        t_start = max(evt_a.start_timestamp - 1.0, sa["timestamp"].min())
+                        t_end = min(evt_b.end_timestamp + 1.0, sb["timestamp"].max())
+                        wa = sa[(sa["timestamp"] >= t_start) & (sa["timestamp"] <= t_end)]["speed"].to_numpy(dtype=float)
+                        wb = sb[(sb["timestamp"] >= t_start) & (sb["timestamp"] <= t_end)]["speed"].to_numpy(dtype=float)
+                        min_len = min(len(wa), len(wb))
+                        if min_len >= 20:
+                            is_c, improvement = _granger_check(wa[:min_len], wb[:min_len], np.arange(min_len) / fps)
+                            if is_c:
+                                conf += 0.15
+                                evidence.append(f"granger:{oid_a}→{oid_b} (improvement={improvement:.3f})")
+                                granger_found = True
+                                break
+                    if granger_found:
+                        break
 
             # 4. Check pairwise interaction features
             for (pa, pb), pf in pair_series.items():

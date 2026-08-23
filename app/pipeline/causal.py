@@ -161,8 +161,17 @@ def _causal_forest_treatments(
 
     results = []
 
-    # For each pair: treat "sudden braking of A" as treatment, "braking of B" as outcome
-    for (id_a, id_b), pf in pair_series.items():
+    # Sort pairs by minimum distance and take top 10 closest pairs
+    sorted_pairs = []
+    for pair, pf in pair_series.items():
+        if "distance" in pf.columns:
+            min_d = float(np.nanmin(pf["distance"])) if np.any(np.isfinite(pf["distance"])) else np.inf
+            sorted_pairs.append((min_d, pair, pf))
+    sorted_pairs.sort()
+    top_pairs = [(pair, pf) for _, pair, pf in sorted_pairs[:10]]
+
+    # For each top pair: treat "sudden braking of A" as treatment, "braking of B" as outcome
+    for (id_a, id_b), pf in top_pairs:
         sa = entity_series.get(id_a)
         sb = entity_series.get(id_b)
         if sa is None or sb is None:
@@ -379,6 +388,10 @@ class CausalEngine:
         localizer = EventOnsetLocalizer()
         onset_map = localizer.localize(all_events, entity_series, pair_series, fps=fps)
 
+        # ── 8.5 Prune graph to primary neighborhood ───────────────────────────
+        primary_evt = self._find_primary_event(all_events, onset_map)
+        all_events, event_edges = self._prune_graph_to_primary(primary_evt, all_events, event_edges)
+
         # ── 9. Build final graph nodes & edges ────────────────────────────────
         nodes = self._build_nodes(entity_series, all_events, onset_map)
         statistical_edges = consensus_edges
@@ -397,9 +410,6 @@ class CausalEngine:
         available = [m for m, r in method_results.items() if r.get("status") == "ok"]
         failed = [m for m, r in method_results.items() if r.get("status") == "error"]
         skipped = [m for m, r in method_results.items() if r.get("status") in ("unavailable", "skipped", "insufficient")]
-
-        # Primary event summary (largest collision/contact if exists)
-        primary_evt = self._find_primary_event(all_events, onset_map)
 
         result = {
             "status": "ok",
@@ -474,6 +484,55 @@ class CausalEngine:
         return result
 
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _prune_graph_to_primary(
+        self,
+        primary_evt: Optional[Dict],
+        all_events: List[TemporalEvent],
+        event_edges: List[Dict]
+    ) -> Tuple[List[TemporalEvent], List[Dict]]:
+        """Isolate the causal neighborhood of the primary event (depth 2)."""
+        if not primary_evt:
+            return all_events, event_edges
+
+        pid = primary_evt["event_id"]
+        distances = {pid: 0}
+        
+        # Trace backwards (causes)
+        q = [pid]
+        while q:
+            curr = q.pop(0)
+            d = distances[curr]
+            if d >= 2:
+                continue
+            for e in event_edges:
+                if e["target_event_id"] == curr and e["confidence"] >= 0.60:
+                    src = e["source_event_id"]
+                    if src not in distances:
+                        distances[src] = d + 1
+                        q.append(src)
+                        
+        # Trace forwards (consequences)
+        q = [pid]
+        while q:
+            curr = q.pop(0)
+            d = distances[curr]
+            if d >= 2:
+                continue
+            for e in event_edges:
+                if e["source_event_id"] == curr and e["confidence"] >= 0.60:
+                    tgt = e["target_event_id"]
+                    if tgt not in distances:
+                        distances[tgt] = d + 1
+                        q.append(tgt)
+
+        connected_events = set(distances.keys())
+        filtered_events = [evt for evt in all_events if evt.event_id in connected_events]
+        filtered_edges = [
+            e for e in event_edges
+            if e["source_event_id"] in connected_events and e["target_event_id"] in connected_events
+        ]
+        return filtered_events, filtered_edges
 
     def _find_primary_event(
         self,

@@ -201,7 +201,7 @@ export default function CausalGraphD3({ result, onSeekFrame, onHoverEvent }: Pro
                 fontSize={10}
                 opacity={0.85}
               >
-                {rel} · {conf.toFixed(2)}
+                {rel} · {conf != null ? conf.toFixed(2) : 'N/A'}
               </text>
             </g>
           );
@@ -247,7 +247,7 @@ export default function CausalGraphD3({ result, onSeekFrame, onHoverEvent }: Pro
               )}
               {/* Confidence dot */}
               <text x={n.x} y={n.y + (onsetTs != null ? 22 : 13)} textAnchor="middle" fill={n.colour} fontSize={9} opacity={0.7}>
-                conf {((n.event?.confidence ?? 1) * 100).toFixed(0)}%
+                conf {n.event?.confidence != null ? (n.event.confidence * 100).toFixed(0) + '%' : 'N/A'}
               </text>
             </g>
           );

@@ -311,7 +311,7 @@ def compute_pairwise_features(
             dist = np.sqrt(dx**2 + dy**2)
 
             # Only keep pairs that come close enough
-            min_dist = np.nanmin(dist)
+            min_dist = float(np.nanmin(dist)) if np.any(np.isfinite(dist)) else np.inf
             if min_dist > interaction_distance_m:
                 continue
 

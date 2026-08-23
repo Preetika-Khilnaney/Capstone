@@ -172,3 +172,4 @@ opencode.json
 .playwright-mcp/*
 yolo_test/*
 main.tex
+tmp*

@@ -43,6 +43,17 @@ function renderReport(text: string) {
   return blocks;
 }
 
+// ── Number formatting helpers ──────────────────────────────────────────────────
+function formatNum(val: number | null | undefined, decimals: number = 2, suffix: string = ''): string {
+  if (val == null) return 'N/A';
+  return val.toFixed(decimals) + suffix;
+}
+
+function formatConf(val: number | null | undefined): string {
+  if (val == null) return 'N/A';
+  return (val * 100).toFixed(0) + '%';
+}
+
 // ── Relationship badge ────────────────────────────────────────────────────────
 function RelBadge({ rel }: { rel: string }) {
   const colours: Record<string, string> = {
@@ -174,9 +185,9 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
           </span>
           <span>
             Objects: <strong>{primaryEvt.object_ids.join(', ')}</strong>
-            {' · '}Onset: <strong>{primaryEvt.event_onset.timestamp.toFixed(2)}s</strong>
-            {' · '}Confirmed: <strong>{primaryEvt.confirmation.timestamp.toFixed(2)}s</strong>
-            {' · '}Confidence: <strong>{(primaryEvt.confidence * 100).toFixed(0)}%</strong>
+            {' · '}Onset: <strong>{formatNum(primaryEvt.event_onset.timestamp, 2, 's')}</strong>
+            {' · '}Confirmed: <strong>{formatNum(primaryEvt.confirmation.timestamp, 2, 's')}</strong>
+            {' · '}Confidence: <strong>{formatConf(primaryEvt.confidence)}</strong>
           </span>
           {onSeekFrame && (
             <button
@@ -242,7 +253,7 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
               ['FPS', causal.fps],
               ['Events', causal.temporal_events?.length ?? 0],
               ['Consensus Edges', causal.consensus_edges?.length ?? 0],
-              ['Confidence', `${(causal.confidence * 100).toFixed(0)}%`],
+              ['Confidence', formatConf(causal.confidence)],
             ].map(([label, value]) => (
               <div key={String(label)} className={styles.statCard}>
                 <span className={styles.statLabel}>{label}</span>
@@ -263,8 +274,8 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
             <div className={styles.incidentBox} style={{ margin: '8px 0', padding: '8px 14px' }}>
               <strong>{hoveredEvent.event_type.replace(/_/g, ' ')}</strong>
               {' · '}Objects: {hoveredEvent.object_ids.join(', ')}
-              {' · '}Onset: {hoveredEvent.onset?.onset_timestamp?.toFixed(2) ?? hoveredEvent.start_timestamp.toFixed(2)}s
-              {' · '}Conf: {(hoveredEvent.confidence * 100).toFixed(0)}%
+              {' · '}Onset: {formatNum(hoveredEvent.onset?.onset_timestamp ?? hoveredEvent.start_timestamp, 2, 's')}
+              {' · '}Conf: {formatConf(hoveredEvent.confidence)}
               {hoveredEvent.onset?.onset_reason && (
                 <span style={{ fontSize: '0.72rem', opacity: 0.7, marginLeft: 8 }}>
                   [{hoveredEvent.onset.onset_reason}]
@@ -299,7 +310,7 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
                       <td><RelBadge rel={e.relationship} /></td>
                       <td>{e.lag_frames}f ({e.lag_seconds}s)</td>
                       <td>{e.support_count}/{e.available_methods}</td>
-                      <td>{(e.final_confidence * 100).toFixed(0)}%</td>
+                      <td>{formatConf(e.final_confidence)}</td>
                       <td>{e.p_value?.toFixed(3) ?? '—'}</td>
                     </tr>
                   ))}
@@ -338,9 +349,9 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
                     </span>
                   </td>
                   <td>{evt.object_ids.join(', ')}</td>
-                  <td>{(evt.onset?.onset_timestamp ?? evt.start_timestamp).toFixed(2)}s</td>
-                  <td>{(evt.onset?.confirmation?.confirmation_timestamp ?? evt.end_timestamp).toFixed(2)}s</td>
-                  <td>{(evt.confidence * 100).toFixed(0)}%</td>
+                  <td>{formatNum(evt.onset?.onset_timestamp ?? evt.start_timestamp, 2, 's')}</td>
+                  <td>{formatNum(evt.onset?.confirmation?.confirmation_timestamp ?? evt.end_timestamp, 2, 's')}</td>
+                  <td>{formatConf(evt.confidence)}</td>
                   <td>
                     {onSeekFrame && (
                       <button
@@ -379,8 +390,8 @@ export default function CausalPanel({ eventId, onSeekFrame }: { eventId: string;
                       <td>→</td>
                       <td style={{ fontSize: '0.72rem' }}>{e.target_type.replace(/_/g, ' ')}</td>
                       <td><RelBadge rel={e.relationship} /></td>
-                      <td>{e.lag_seconds.toFixed(2)}s</td>
-                      <td>{(e.confidence * 100).toFixed(0)}%</td>
+                      <td>{formatNum(e.lag_seconds, 2, 's')}</td>
+                      <td>{formatConf(e.confidence)}</td>
                       <td style={{ fontSize: '0.7rem', opacity: 0.7 }}>{e.evidence.slice(0, 2).join(', ')}</td>
                     </tr>
                   ))}

@@ -26,4 +26,4 @@ async def get_sitrep(event_id: str):
     path = settings.paths.dataset_dir / event_id / "sitrep.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"No SitRep for {event_id}; POST to generate")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=lambda x: None)

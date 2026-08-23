@@ -46,7 +46,7 @@ async def get_causal_graph(event_id: str):
             status_code=404,
             detail=f"No causal graph for {event_id}; POST /api/causal/analyze/{event_id} first",
         )
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=lambda x: None)
 
 
 @router.get("/methods")
@@ -83,7 +83,7 @@ async def get_causal_report(event_id: str):
     path = settings.paths.dataset_dir / event_id / "causal_report.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"No causal report for {event_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=lambda x: None)
 
 
 @router.get("/timeline/{event_id}")
@@ -92,4 +92,4 @@ async def get_event_timeline(event_id: str):
     path = settings.paths.dataset_dir / event_id / "event_timeline.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"No event timeline for {event_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=lambda x: None)
