@@ -30,27 +30,6 @@ const VideoAnnotator = forwardRef<VideoAnnotatorHandle, VideoAnnotatorProps>(
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
-    const animationRef = useRef<number | null>(null);
-
-    // Expose seek() to parent
-    useImperativeHandle(ref, () => ({
-      seek(time: number) {
-        const video = videoRef.current;
-        if (!video) return;
-        // If metadata not loaded yet, wait for it then seek
-        if (video.readyState >= 1) {
-          video.currentTime = time;
-          drawAnnotations();
-        } else {
-          const onLoaded = () => {
-            video.currentTime = time;
-            drawAnnotations();
-            video.removeEventListener('loadedmetadata', onLoaded);
-          };
-          video.addEventListener('loadedmetadata', onLoaded);
-        }
-      },
-    }));
 
     const framesData = useRef<Map<number, any[]>>(new Map());
 
@@ -81,7 +60,6 @@ const VideoAnnotator = forwardRef<VideoAnnotatorHandle, VideoAnnotatorProps>(
         canvas.height = video.videoHeight || 1080;
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      setCurrentTime(video.currentTime);
       if (showAnnotations && isInEventWindow(video.currentTime)) {
         const relativeTime = isSourceVideo ? video.currentTime - eventStartSec : video.currentTime;
         const currentFrame = Math.max(0, Math.floor(relativeTime * 10));
@@ -105,27 +83,70 @@ const VideoAnnotator = forwardRef<VideoAnnotatorHandle, VideoAnnotatorProps>(
           ctx.fillText(label, x1 + 5, y1 - 7);
         });
       }
-      if (!video.paused && !video.ended) {
-        animationRef.current = requestAnimationFrame(drawAnnotations);
-      }
     }, [showAnnotations, isSourceVideo, eventStartSec, isInEventWindow]);
 
-    const handlePlay = () => { setIsPlaying(true); drawAnnotations(); };
-    const handlePause = () => { setIsPlaying(false); if (animationRef.current) cancelAnimationFrame(animationRef.current); drawAnnotations(); };
-    const handleSeek = () => { drawAnnotations(); };
-    const handleTimeUpdate = () => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); };
+    // Run the render loop only while playing; the loop stops on its own when the
+    // media pauses/ends, and the effect cleanup cancels a pending frame.
+    useEffect(() => {
+      if (!isPlaying) return;
+      let raf: number = 0;
+      function tick() {
+        drawAnnotations();
+        const v = videoRef.current;
+        if (v && !v.paused && !v.ended) {
+          raf = requestAnimationFrame(tick);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+      return () => cancelAnimationFrame(raf);
+    }, [isPlaying, drawAnnotations]);
+
+    // Keep the playhead/timer state in step with the media clock without re-deriving
+    // it from canvas frames: `timeupdate` (~4Hz) is enough for a 10fps overlay and is
+    // robust even when requestAnimationFrame is throttled (background/battery saver).
+    const syncTime = useCallback(() => {
+      if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+    }, []);
+
+    const handlePlay = () => { setIsPlaying(true); };
+    const handlePause = () => { setIsPlaying(false); syncTime(); drawAnnotations(); };
+    const handleEnded = () => { setIsPlaying(false); syncTime(); drawAnnotations(); };
+    const handleSeek = () => { syncTime(); drawAnnotations(); };
+    const handleTimeUpdate = () => { syncTime(); };
     const handleLoadedMetadata = () => { if (videoRef.current) setDuration(videoRef.current.duration); };
 
     useEffect(() => { drawAnnotations(); }, [showAnnotations, csvData, drawAnnotations]);
 
+    // Expose seek() to the parent. Defined after drawAnnotations so the handle
+    // always captures the latest render closure.
+    useImperativeHandle(ref, () => ({
+      seek(time: number) {
+        const video = videoRef.current;
+        if (!video) return;
+        // If metadata not loaded yet, wait for it then seek
+        if (video.readyState >= 1) {
+          video.currentTime = time;
+          drawAnnotations();
+        } else {
+          const onLoaded = () => {
+            video.currentTime = time;
+            drawAnnotations();
+            video.removeEventListener('loadedmetadata', onLoaded);
+          };
+          video.addEventListener('loadedmetadata', onLoaded);
+        }
+      },
+    }));
+
     const jumpToEvent = () => {
-      if (videoRef.current) { videoRef.current.currentTime = eventStartSec; drawAnnotations(); }
+      if (videoRef.current) { videoRef.current.currentTime = eventStartSec; syncTime(); drawAnnotations(); }
     };
 
     const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
       if (!timelineRef.current || !videoRef.current || duration === 0) return;
       const rect = timelineRef.current.getBoundingClientRect();
       videoRef.current.currentTime = ((e.clientX - rect.left) / rect.width) * duration;
+      syncTime();
       drawAnnotations();
     };
 
@@ -143,6 +164,7 @@ const VideoAnnotator = forwardRef<VideoAnnotatorHandle, VideoAnnotatorProps>(
             className={styles.video}
             onPlay={handlePlay}
             onPause={handlePause}
+            onEnded={handleEnded}
             onSeeked={handleSeek}
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}

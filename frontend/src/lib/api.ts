@@ -126,11 +126,15 @@ export function getSourceStreamUrl(videoId: string): string {
 /**
  * Trigger the pipeline on a video file
  */
-export async function triggerPipeline(videoPath: string): Promise<{ event_id: string | null; status: string; message: string }> {
+export async function triggerPipeline(videoPath: string, cameraId?: string, srcPts?: number[][]): Promise<{ event_id: string | null; status: string; message: string }> {
+  const payload: any = { video_path: videoPath };
+  if (cameraId) payload.camera_id = cameraId;
+  if (srcPts) payload.src_pts = srcPts;
+
   const res = await fetch(`${API_BASE}/api/pipeline/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ video_path: videoPath }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -139,6 +143,30 @@ export async function triggerPipeline(videoPath: string): Promise<{ event_id: st
       if (body.detail) detail = body.detail;
     } catch { /* use statusText fallback */ }
     throw new Error(`Failed to trigger pipeline: ${detail}`);
+  }
+  return res.json();
+}
+
+/**
+ * Upload a video file from the browser and trigger the pipeline on it
+ */
+export async function uploadPipeline(file: File, cameraId?: string, srcPts?: number[][]): Promise<{ event_id: string | null; status: string; message: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (cameraId) formData.append('camera_id', cameraId);
+  if (srcPts) formData.append('src_pts', JSON.stringify(srcPts));
+
+  const res = await fetch(`${API_BASE}/api/pipeline/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = body.detail;
+    } catch { /* use statusText fallback */ }
+    throw new Error(`Failed to upload pipeline: ${detail}`);
   }
   return res.json();
 }
@@ -182,8 +210,9 @@ export async function ragSearch(query: string, limit: number = 5): Promise<RAGSe
   return data.results || [];
 }
 
-// ── Causal Engine API (Track 2) ──────────────────────────────────────────────
+// ── Causal Engine API (Track 2) — Full multi-method engine ───────────────────
 
+// ── Legacy types (kept for SitRep compatibility) ─────────────────────────────
 export interface CausalDriver {
   cause: string;
   lag: number;
@@ -202,18 +231,125 @@ export interface CausalTarget {
   drivers_of_target_speed: CausalDriver[];
 }
 
+// ── Full engine types ─────────────────────────────────────────────────────────
+
+export interface CausalEdge {
+  source: string;
+  target: string;
+  relationship: 'causes' | 'supports' | 'precedes';
+  lag_frames: number;
+  lag_seconds: number;
+  p_value: number | null;
+  average_strength_norm: number;
+  support_count: number;
+  available_methods: number;
+  support_ratio: number;
+  final_confidence: number;
+  method_support: Record<string, { strength: number | null; strength_norm: number | null; lag_frames: number; p_value: number | null }>;
+}
+
+export interface TemporalEvent {
+  event_id: string;
+  object_ids: string[];
+  event_type: string;
+  start_frame: number;
+  end_frame: number;
+  start_timestamp: number;
+  end_timestamp: number;
+  features: Record<string, unknown>;
+  confidence: number;
+  onset: {
+    onset_frame: number;
+    onset_timestamp: number;
+    onset_reason: string;
+    precursor_frame?: number;
+    precursor_timestamp?: number;
+    confirmation?: { confirmation_frame: number; confirmation_timestamp: number };
+  };
+}
+
+export interface CausalNode {
+  id: string;
+  label: string;
+  type: 'object' | 'event' | 'state' | 'evidence';
+  object_ids: string[];
+  class?: string;
+  event_type?: string;
+  timestamp: number | null;
+  frame?: number;
+  confidence: number;
+  features?: Record<string, unknown>;
+}
+
+export interface CausalEventEdge {
+  source_event_id: string;
+  target_event_id: string;
+  source_type: string;
+  target_type: string;
+  source_objects: string[];
+  target_objects: string[];
+  relationship: 'causes' | 'supports' | 'precedes';
+  confidence: number;
+  lag_seconds: number;
+  evidence: string[];
+}
+
+export interface PrimaryEvent {
+  event_id: string;
+  event_type: string;
+  object_ids: string[];
+  event_onset: { frame: number; timestamp: number; reason: string };
+  confirmation: { frame: number; timestamp: number };
+  confidence: number;
+}
+
+export interface FullCausalResult {
+  status: string;
+  message?: string;
+  event_id: string;
+  fps: number;
+  n_entities: number;
+  n_pairs: number;
+  n_causal_vars: number;
+  n_timesteps: number;
+  primary_event: PrimaryEvent | null;
+  entities: Array<{ object_id: string; class: string | null; n_frames: number; speed_range_mps: [number, number] | null }>;
+  nodes: CausalNode[];
+  statistical_causal_edges: CausalEdge[];
+  temporal_event_edges: CausalEventEdge[];
+  method_results: Record<string, { status: string; n_edges: number; reason?: string }>;
+  available_methods: string[];
+  failed_methods: string[];
+  skipped_methods: string[];
+  consensus_edges: CausalEdge[];
+  temporal_events: TemporalEvent[];
+  explanation: string;
+  confidence: number;
+  note: string;
+}
+
+// Keep CausalResult as alias for backward compat with SitRep
 export interface CausalResult {
   status: string;
   message?: string;
   event_id?: string;
   targets?: CausalTarget[];
   note?: string;
+  // Full engine fields (optional so old code doesn't break)
+  nodes?: CausalNode[];
+  consensus_edges?: CausalEdge[];
+  temporal_events?: TemporalEvent[];
+  temporal_event_edges?: CausalEventEdge[];
+  primary_event?: PrimaryEvent | null;
+  explanation?: string;
+  available_methods?: string[];
+  method_results?: Record<string, { status: string; n_edges: number }>;
 }
 
 /**
- * Run PCMCI+ causal discovery on an event's kinematics (Track 2)
+ * Run the full multi-method causal analysis on an event (Track 2)
  */
-export async function analyzeCausal(eventId: string): Promise<CausalResult> {
+export async function analyzeCausal(eventId: string): Promise<FullCausalResult> {
   const res = await fetch(`${API_BASE}/api/causal/analyze/${eventId}`, { method: 'POST' });
   if (!res.ok) {
     let detail = res.statusText;
@@ -229,13 +365,23 @@ export async function analyzeCausal(eventId: string): Promise<CausalResult> {
 /**
  * Fetch a previously-computed causal graph for an event, if one exists
  */
-export async function fetchCausalGraph(eventId: string): Promise<CausalResult | null> {
-  const res = await fetch(`${API_BASE}/api/causal/${eventId}`);
+export async function fetchCausalGraph(eventId: string): Promise<FullCausalResult | null> {
+  const res = await fetch(`${API_BASE}/api/causal/graph/${eventId}`);
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(`Failed to fetch causal graph: ${res.statusText}`);
   }
   return res.json();
+}
+
+/**
+ * Fetch available causal methods and their status
+ */
+export async function fetchCausalMethods(): Promise<Record<string, { available: boolean; library: string; reason?: string }>> {
+  const res = await fetch(`${API_BASE}/api/causal/methods`);
+  if (!res.ok) throw new Error(`Failed to fetch methods: ${res.statusText}`);
+  const data = await res.json();
+  return data.methods;
 }
 
 // ── Synthesis API (Track 4 — Situation Reports) ──────────────────────────────

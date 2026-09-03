@@ -44,8 +44,19 @@ interface FeedPlayerProps {
 function FeedPlayer({ source, events, csvData }: FeedPlayerProps) {
   const extracted = events.filter(e => e.Status === 'Extracted' && e.Trigger_Time > 0);
   const firstEvt = extracted[0];
-  const startSec = firstEvt ? Math.max(0, firstEvt.Trigger_Time - PRE_BUFFER) : 0;
-  const endSec = firstEvt ? startSec + (firstEvt.Duration_s ?? 10) : 0;
+  // Derive the source-video event window from the CSV timestamps, which are
+  // anchor-relative (frame 0 = -pre_buffer_seconds, incident anchor = t=0):
+  // source-time start/end = Trigger_Time + min/max(Timestamp). Fall back to a 4s
+  // pre-buffer estimate while the CSV isn't loaded yet.
+  const timestamps = (csvData || [])
+    .map(row => parseFloat(row.Timestamp))
+    .filter(n => Number.isFinite(n));
+  const startSec = firstEvt
+    ? (timestamps.length ? firstEvt.Trigger_Time + Math.min(...timestamps) : Math.max(0, firstEvt.Trigger_Time - PRE_BUFFER))
+    : 0;
+  const endSec = firstEvt
+    ? (timestamps.length ? firstEvt.Trigger_Time + Math.max(...timestamps) : startSec + (firstEvt.Duration_s ?? 10))
+    : 0;
 
   return (
     <div className={styles.feedTile}>

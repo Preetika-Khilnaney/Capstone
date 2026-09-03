@@ -117,7 +117,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
-env/
+venv
 venv/
 ENV/
 env.bak/
@@ -166,3 +166,10 @@ frontend/out
 testVideo.mp4
 testVideo2.mp4
 test_pipeline_api.py
+
+opencode.json
+.agents/*
+.playwright-mcp/*
+yolo_test/*
+main.tex
+tmp*

@@ -27,23 +27,37 @@ _INTERP_COLS = ["BBox_X1", "BBox_Y1", "BBox_X2", "BBox_Y2", "Pos_X_m", "Pos_Y_m"
 
 def _smooth_series(arr: np.ndarray, window: int) -> np.ndarray:
     """
-    Savitzky-Golay smoothing of a 1-D world-position series.
+    Savitzky-Golay smoothing of a 1-D series, applied ONLY on its finite values.
 
-    No-ops when disabled (window < 5), too short, or containing NaNs (large gaps
-    that were NaN-padded rather than interpolated) — savgol requires finite input.
+    No-ops when disabled (window < 5), too short, or too few finite points. The
+    old version skipped the whole pass if a single NaN existed (one depth-gated
+    frame disables smoothing for the entire series, leaving velocity spikes
+    behind); the fix smooths the finite portion only.
     """
-    if window < 5 or arr.size <= window or not np.all(np.isfinite(arr)):
+    if window < 5 or arr.size <= window:
+        return arr
+    finite = np.isfinite(arr)
+    if int(finite.sum()) <= window:
         return arr
     if window % 2 == 0:
         window += 1
-    return savgol_filter(arr, window, polyorder=2)
+    smoothed = arr.copy()
+    smoothed[finite] = savgol_filter(arr[finite].astype(np.float64), window, polyorder=2)
+    return smoothed
 
 
-def _interpolate_tracks(df: pd.DataFrame, max_gap: int) -> pd.DataFrame:
+def _interpolate_tracks(
+    df: pd.DataFrame, max_gap: int, n_frames: int | None = None
+) -> pd.DataFrame:
     """
     For each Object_ID, fill missing frames within its lifespan.
     - Gaps ≤ max_gap: linearly interpolate spatial/bbox columns, recalculate velocity.
     - Gaps > max_gap: NaN-pad.
+
+    ``n_frames`` is the real clip length (perception's actual target-frame count);
+    it only constrains the per-object timestamp grid when given. The uniform
+    160-frame grid (settings.video.total_frames) is a pure fallback/legacy default,
+    so variable-length anchors (incident-anchored clips) interpolate correctly.
     """
     if df.empty:
         return df
@@ -51,10 +65,8 @@ def _interpolate_tracks(df: pd.DataFrame, max_gap: int) -> pd.DataFrame:
     cfg_v = settings.video
     dt = 1.0 / cfg_v.target_fps
     t_start = -cfg_v.pre_buffer_seconds
-    total_frames = cfg_v.total_frames
-
-    # Full frame index for the clip
-    all_frame_ids = list(range(total_frames))
+    if n_frames is None:
+        n_frames = cfg_v.total_frames
 
     interpolated_parts: list[pd.DataFrame] = []
 
@@ -62,9 +74,11 @@ def _interpolate_tracks(df: pd.DataFrame, max_gap: int) -> pd.DataFrame:
         obj_df = df[df["Object_ID"] == obj_id].copy()
         obj_df = obj_df.set_index("Frame_ID")
 
-        # Span of this object's life
-        first_frame = obj_df.index.min()
-        last_frame = obj_df.index.max()
+        # Span of this object's life, clamped to the real clip grid 0..n_frames-1
+        first_frame = max(int(obj_df.index.min()), 0)
+        last_frame = min(int(obj_df.index.max()), n_frames - 1)
+        if last_frame < first_frame:
+            continue
         lifespan_frames = list(range(first_frame, last_frame + 1))
 
         # Re-index to full lifespan
@@ -242,7 +256,8 @@ def finalize_event(
 
     # ── 1. Interpolation ────────────────────────────────────────────────
     df = _interpolate_tracks(
-        raw_df, max_gap=cfg.interpolation.max_gap_frames
+        raw_df, max_gap=cfg.interpolation.max_gap_frames,
+        n_frames=len(result.decoded_frames),
     )
 
     # ── 2. CSV export ───────────────────────────────────────────────────

@@ -3,6 +3,7 @@ opencv-python>=4.8
 numpy>=1.24
 pandas>=2.0
 fastapi>=0.115
+python-multipart>=0.0.9
 uvicorn>=0.34
 lapx>=0.5.2
 torch>=2.0

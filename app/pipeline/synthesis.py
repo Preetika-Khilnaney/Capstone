@@ -149,9 +149,14 @@ def _build_evidence(event_id: str) -> dict | None:
     class_counts = per_obj_class.value_counts().to_dict()
     n_persons = int(class_counts.get("person", 0))
     n_vehicles = int(sum(c for k, c in class_counts.items() if k in _VEHICLE_CLASSES))
+    ts = df["Timestamp"].to_numpy(dtype=float)
+    ts = ts[np.isfinite(ts)]
+    window_s = [round(float(ts.min()), 1), round(float(ts.max()), 1)] if ts.size else \
+        [-settings.video.pre_buffer_seconds, settings.video.post_trigger_seconds]
 
     # ── causal findings (Track 2) — one summary per analyzed target ──────────
     causal: list[dict] | None = None
+    episode: dict | None = None
     if causal_path.exists():
         try:
             cg = json.loads(causal_path.read_text(encoding="utf-8"))
@@ -173,6 +178,15 @@ def _build_evidence(event_id: str) -> dict | None:
                             f"{l['cause']} at lag {l['lag']} (strength {l['strength']})" for l in external)
                     ),
                 })
+            ep = cg.get("episode")
+            if isinstance(ep, dict) and ep.get("nodes"):
+                episode = {
+                    "nodes": [{"node_id": n.get("node_id"), "state": n.get("state"),
+                               "window_s": n.get("window_s"), "evidence": n.get("evidence")}
+                              for n in ep["nodes"]],
+                    "relations": ep.get("relations") or [],
+                    "root_cause": ep.get("root_cause") or {},
+                }
         except Exception as exc:
             logger.warning("Could not read causal graph: %s", exc)
 
@@ -185,11 +199,11 @@ def _build_evidence(event_id: str) -> dict | None:
         },
         "scene": {
             "vehicles_tracked": n_vehicles, "persons_tracked": n_persons,
-            "class_counts": class_counts, "window_s": [-settings.video.pre_buffer_seconds,
-                                                       settings.video.post_trigger_seconds],
+            "class_counts": class_counts, "window_s": window_s,
         },
         "entities": entities,
         "causal": causal,
+        "episode": episode,
     }
 
 
@@ -197,8 +211,8 @@ def _format_evidence(e: dict) -> str:
     lines = []
     ev, sc = e["event"], e["scene"]
     lines.append(f"EVENT {ev['event_id']}  (source: {ev.get('source')})")
-    lines.append(f"Window: {sc['window_s'][0]}s to +{sc['window_s'][1]}s around the trigger "
-                 f"(t=0 is the flagged moment).")
+    lines.append(f"Window: {sc['window_s'][0]}s to +{sc['window_s'][1]}s "
+                 f"(clip-relative; t=0 is the incident-defining moment).")
     lines.append(f"Scene: {sc['vehicles_tracked']} vehicles + {sc['persons_tracked']} persons tracked. "
                  f"Classes: {sc['class_counts']}.")
     lines.append("")
@@ -231,6 +245,25 @@ def _format_evidence(e: dict) -> str:
             lines.append(f"    {c.get('interpretation')}")
     else:
         lines.append("CAUSAL ASSESSMENT: not available (causal analysis not run).")
+    ep = e.get("episode")
+    if ep:
+        lines.append("")
+        lines.append("STAGED EPISODE NARRATIVE (staged nodes, typed relations, root cause):")
+        for n in ep.get("nodes") or []:
+            w = n.get("window_s") or [None, None]
+            evid = "; ".join(n.get("evidence") or [])
+            lines.append(f"  {n.get('node_id')} {n.get('state')}: {w[0]}s..{w[1]}s — {evid}")
+        for r in ep.get("relations") or []:
+            lines.append(f"  Relation: {r.get('source_node')} → {r.get('target_node')} "
+                         f"({r.get('relation_type')}): {r.get('mechanism')}")
+        rc = ep.get("root_cause") or {}
+        if rc.get("primary_factor"):
+            p = rc["primary_factor"]
+            lines.append(f"  Root cause (primary): {p.get('kind')} — {p.get('text')}")
+        for label, key in (("contributing", "contributing_factors"),
+                           ("mitigating", "mitigating_factors")):
+            for f in rc.get(key) or []:
+                lines.append(f"    {label}: {f}")
     return "\n".join(lines)
 
 
@@ -243,6 +276,11 @@ _SYSTEM = (
     "low-confidence points. If INCIDENT INDICATORS are listed, lead the Summary with the likely "
     "collision/impact they suggest (name the vehicle and, if given, the nearest entity it may have "
     "struck), while making clear it is inferred from kinematics + track loss, not directly observed. "
+    "If a STAGED EPISODE NARRATIVE is present, organise the SitRep around its stage chain "
+    "(Stable → Trigger/Critical → Incident → Hazard Response → Recovery): the Kinematic Timeline "
+    "section should mirror the node windows, and the Causal Assessment section should reflect the "
+    "typed relations (direct cause, triggered response, consequence) and the stated root cause and "
+    "contributing/mitigating factors — attributions are hypotheses from kinematics, not facts. "
     "Structure the report as: Summary; Entities Involved; Kinematic Timeline; Causal Assessment; "
     "Confidence & Caveats. Keep it under ~250 words."
 )

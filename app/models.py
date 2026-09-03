@@ -12,6 +12,27 @@ class PipelineRequest(BaseModel):
         description="Absolute path to the input .mp4 video file.",
         examples=["path/to/videos/intersection_01.mp4"],
     )
+    camera_id: str | None = Field(
+        None,
+        description="Optional ID of the camera to associate with this video.",
+    )
+    src_pts: list[list[int]] | None = Field(
+        None,
+        description="Optional 4x2 matrix (list of 4 [x,y] points) for homography calibration. Format: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]].",
+    )
+
+
+class FeedStartRequest(BaseModel):
+    """Request body for POST /api/feeds/{video_id}/start."""
+    camera_id: str | None = Field(
+        None,
+        description="Optional ID of the camera to associate with this feed.",
+    )
+    src_pts: list[list[int]] | None = Field(
+        None,
+        description="Optional 4x2 matrix (list of 4 [x,y] points) for homography calibration. Format: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]].",
+    )
+
 
 
 class PipelineResponse(BaseModel):

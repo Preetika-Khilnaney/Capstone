@@ -95,6 +95,20 @@ def _load_homography() -> tuple[np.ndarray | None, tuple[int, int] | None]:
     return H, ref
 
 
+def _calculate_homography(src_pts: list[list[int]]) -> tuple[np.ndarray, tuple[int, int]]:
+    """
+    Calculate the homography matrix on the fly using the provided source points.
+    Assumes standard 3.5m lane width and 14.0m longitudinal depth on a reference.
+    """
+    src = np.float32(src_pts)
+    lw, L = 3.5, 14.0
+    dst = np.float32([[0, 0], [lw, 0], [lw, L], [0, L]])
+    H = cv2.getPerspectiveTransform(src, dst)
+    ref = None
+    logger.info("Calculated dynamic homography matrix on the fly (no resolution scaling)")
+    return H, ref
+
+
 def _decode_frames(encoded_frames: list[bytes]) -> list[np.ndarray]:
     """Decode JPEG buffers into arrays."""
     decoded = []
@@ -116,7 +130,7 @@ def _pixel_to_world(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     return transformed.reshape(-1, 2)
 
 
-def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResult:
+def process_event(event_id: str, frame_block: EventFrameBlock, src_pts: list[list[int]] | None = None) -> PerceptionResult:
     """
     Run YOLO + BoT-SORT on a downsampled event clip and build a flat DataFrame.
 
@@ -157,7 +171,10 @@ def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResu
 
     # ── Load model & homography ──────────────────────────────────────────
     model = YOLO(_resolve_yolo_model())
-    H, H_ref = _load_homography()
+    if src_pts:
+        H, H_ref = _calculate_homography(src_pts)
+    else:
+        H, H_ref = _load_homography()
 
     # Scale detection pixels to the homography's calibration resolution. Guards
     # against the calibration being picked at a different resolution than the
@@ -175,6 +192,7 @@ def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResu
     detection_metas: list[DetectionMeta] = []
     target_frames: list[np.ndarray] = []
     failed_frames = 0
+    track_first_cls: dict[int, int] = {}
 
     # Pre-compute timestamp offset: pre-buffer seconds before trigger
     t_start = -settings.video.pre_buffer_seconds
@@ -221,7 +239,15 @@ def process_event(event_id: str, frame_block: EventFrameBlock) -> PerceptionResu
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
 
             class_label = _COCO_LABELS.get(cls_idx, f"class_{cls_idx}")
-            object_id = f"V_{track_id:02d}"
+
+            # BoT-SORT occasionally merges two distinct objects (e.g. a rider
+            # and the motorcycle) into one track, producing mixed-class rows
+            # under a single ID. Split by class: the first class seen keeps the
+            # base ID, later classes get a deterministic `x<cls>` suffix, so a
+            # track never mixes kinematics of two different objects.
+            first_cls = track_first_cls.setdefault(track_id, cls_idx)
+            object_id = f"V_{track_id:02d}" if cls_idx == first_cls \
+                else f"V_{track_id:02d}x{cls_idx}"
 
             # Bottom-center of bounding box
             bc_x = (x1 + x2) / 2.0
